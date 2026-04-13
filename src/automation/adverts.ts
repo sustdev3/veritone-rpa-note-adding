@@ -4,7 +4,7 @@ import { randomDelay } from "../utils/shared/shared";
 
 async function clickManageAdverts(page: Page): Promise<void> {
   logger.info("Clicking Manage Adverts...");
-  await page.click("a#prim_manage");
+  await page.click('a[href*="manage-vacancies.cgi"]');
 }
 
 async function searchAdvertByTitle(
@@ -12,14 +12,21 @@ async function searchAdvertByTitle(
   advertTitle: string,
 ): Promise<void> {
   logger.info(`Searching for advert: "${advertTitle}"`);
-  await page.fill("input[id='searchbar_keywords']", advertTitle);
+
+  await page.locator("input[id='searchbar_keywords']").clear();
+  await page
+    .locator("input[id='searchbar_keywords']")
+    .pressSequentially(advertTitle, { delay: 80 });
   await page.click("button[class='searchsubmit']");
 
   logger.info("Waiting for results table to appear...");
   await page.waitForSelector("table.managevacancies");
 }
 
-async function selectAdvertResult(page: Page): Promise<string> {
+async function selectAdvertResult(
+  page: Page,
+  resultIndex: number = 0,
+): Promise<{ advertId: string; totalResults: number }> {
   logger.info("Selecting advert result...");
   const links = await page.locator("a.jobtitle.no_dragdrop").all();
 
@@ -27,7 +34,13 @@ async function selectAdvertResult(page: Page): Promise<string> {
     throw new Error("No adverts found for title: {advertTitle}");
   }
 
-  const href = await links[0].getAttribute("href");
+  if (resultIndex >= links.length) {
+    throw new Error(
+      `Result index ${resultIndex} out of range. Only ${links.length} advert(s) found.`,
+    );
+  }
+
+  const href = await links[resultIndex].getAttribute("href");
   if (!href) {
     throw new Error("Unable to extract href from selected advert");
   }
@@ -38,25 +51,28 @@ async function selectAdvertResult(page: Page): Promise<string> {
   }
 
   const advertId = match[1];
-  logger.info(`Selected advert with ID: ${advertId}`);
+  logger.info(
+    `Selected advert with ID: ${advertId} (result ${resultIndex + 1}/${links.length})`,
+  );
 
   logger.info("Clicking advert link and waiting for page load...");
-  await links[0].click();
+  await links[resultIndex].click();
   await page.waitForLoadState("networkidle", { timeout: 15000 });
 
-  return advertId;
+  return { advertId, totalResults: links.length };
 }
 
 export async function navigateToAdvert(
   page: Page,
   advertTitle: string,
-): Promise<string> {
+  resultIndex: number = 0,
+): Promise<{ advertId: string; totalResults: number }> {
   await clickManageAdverts(page);
   await randomDelay();
 
   await searchAdvertByTitle(page, advertTitle);
   await randomDelay();
 
-  const advertId = await selectAdvertResult(page);
-  return advertId;
+  const result = await selectAdvertResult(page, resultIndex);
+  return result;
 }

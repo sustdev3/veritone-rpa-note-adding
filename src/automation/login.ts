@@ -21,10 +21,16 @@ export async function login(page: Page): Promise<void> {
   await randomDelay();
 
   logger.info("Filling in username...");
-  await page.fill('input[name="username"]', username);
+  await page.locator('input[name="username"]').clear();
+  await page
+    .locator('input[name="username"]')
+    .pressSequentially(username, { delay: 80 });
 
   logger.info("Filling in password...");
-  await page.fill('input[name="password"]', password);
+  await page.locator('input[name="password"]').clear();
+  await page
+    .locator('input[name="password"]')
+    .pressSequentially(password, { delay: 80 });
 
   logger.info("Submitting login form...");
   await page.click("a#submit_button");
