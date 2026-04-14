@@ -7,6 +7,14 @@ export async function openResponsesTab(page: Page): Promise<void> {
   logger.info("Clicking Responses tab...");
   await page.click('a[href*="adcresponses"]');
   await page.waitForLoadState("networkidle");
+
+  logger.info("Checking if page is fully loaded...");
+  await page
+    .locator('#select2-drop-mask')
+    .waitFor({ state: 'hidden', timeout: 5000 })
+    .then(() => logger.info("Page loading complete"))
+    .catch(() => logger.info("Page loading check timed out"));
+
   await randomDelay();
 }
 
@@ -25,6 +33,13 @@ async function searchCandidate(
     .pressSequentially(candidateEmail, { delay: 80 });
 
   await page.click("section#main-criteria button.btn.btn-success");
+
+  logger.info("Checking if page is fully loaded...");
+  await page
+    .locator('#select2-drop-mask')
+    .waitFor({ state: 'hidden', timeout: 5000 })
+    .then(() => logger.info("Page loading complete"))
+    .catch(() => logger.info("Page loading check timed out"));
 
   logger.info("Waiting for search results to load...");
   await page.waitForFunction(
@@ -63,6 +78,14 @@ async function selectCandidate(page: Page): Promise<boolean> {
   );
   await eyeButton.click();
   await page.locator("div.profile-box").waitFor({ state: "visible" });
+
+  logger.info("Checking if profile is fully loaded...");
+  await page
+    .locator('#select2-drop-mask')
+    .waitFor({ state: 'hidden', timeout: 5000 })
+    .then(() => logger.info("Profile loading complete"))
+    .catch(() => logger.info("Profile loading check timed out"));
+
   await page.waitForTimeout(1500);
 
   return true;
@@ -74,10 +97,12 @@ async function enterNotes(page: Page, row: CandidateRow): Promise<void> {
   const textArea = page.locator("#add_note textarea");
   await textArea.waitFor({ state: "visible" });
   logger.info("Found note textarea field.");
+  await randomDelay();
 
   const button = page.locator('#add_note button:not([data-dropdown])');
   await button.waitFor({ state: "visible" });
   logger.info("Found note button.");
+  await randomDelay();
 
   const timestamp = new Date().toLocaleString('en-AU', {
     day: 'numeric', month: 'short', year: 'numeric',
@@ -97,6 +122,7 @@ async function enterNotes(page: Page, row: CandidateRow): Promise<void> {
   logger.info("Counting existing notes before submission...");
   const notesBeforeCount = await page.locator('ul.notes-list li.note').count();
   logger.info(`Notes before: ${notesBeforeCount}`);
+  await randomDelay();
 
   logger.info("Typing note content into textarea...");
   const lines = noteContent.split('\n');
@@ -109,9 +135,20 @@ async function enterNotes(page: Page, row: CandidateRow): Promise<void> {
     }
   }
   logger.info("Note content entered successfully.");
+  await randomDelay();
+
+  logger.info("Checking if page is fully loaded...");
+  const isLoaded = await page
+    .locator('#select2-drop-mask')
+    .waitFor({ state: 'hidden', timeout: 5000 })
+    .then(() => true)
+    .catch(() => false);
+  logger.info(`Page loading check: ${isLoaded ? 'complete' : 'completed with timeout'}`);
+  await randomDelay();
 
   logger.info("Clicking submit button...");
   await button.click();
+  await randomDelay();
 
   logger.info("Waiting for note to appear in notes list...");
   await page.waitForFunction(
@@ -120,6 +157,7 @@ async function enterNotes(page: Page, row: CandidateRow): Promise<void> {
     { timeout: 10000, polling: 500 }
   );
   logger.info("Note saved successfully.");
+  await randomDelay();
 
   logger.info("Closing candidate profile modal...");
   await page.locator("a.profile-close").click();

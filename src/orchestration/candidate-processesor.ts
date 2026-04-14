@@ -2,13 +2,22 @@ import { Page } from "playwright";
 import logger from "../utils/logger";
 import { navigateToAdvert } from "../automation/adverts";
 import { openResponsesTab, findAndProcessCandidate } from "../automation/responses";
-import { CandidateRow, markRowAsProcessed } from "../services/sheets";
+import { CandidateRow, markRowAsProcessed, markRowAsError } from "../services/sheets";
 import { randomDelay } from "../utils/shared/shared";
+
+interface FailedCandidate {
+  name: string;
+  email: string;
+  rowIndex: number;
+  error: string;
+}
 
 export async function processAllCandidatesByAdvert(
   page: Page,
   candidates: CandidateRow[],
-): Promise<void> {
+): Promise<FailedCandidate[]> {
+  const failedCandidates: FailedCandidate[] = [];
+
   // Group candidates by advert title
   const groupedByAdvert = new Map<string, CandidateRow[]>();
   for (const candidate of candidates) {
@@ -38,25 +47,66 @@ export async function processAllCandidatesByAdvert(
       await openResponsesTab(page);
 
       const notFound: CandidateRow[] = [];
+      const processedInThisRound: CandidateRow[] = [];
 
       for (const candidate of remainingCandidates) {
         logger.info(
           `Searching for candidate: ${candidate.candidateName} (${candidate.candidateEmail})`,
         );
 
-        const found = await findAndProcessCandidate(
-          page,
-          candidate.candidateEmail,
-          candidate,
-        );
+        let retryCount = 0;
+        const maxRetries = 3;
+        let processed = false;
 
-        if (found) {
-          logger.info(`✓ Found candidate ${candidate.candidateName} in advert responses.`);
-          await markRowAsProcessed(candidate.rowIndex);
-          logger.info(`Marked row ${candidate.rowIndex} as processed in Google Sheet.`);
-        } else {
-          logger.warn(`✗ Candidate ${candidate.candidateName} not found in this result.`);
-          notFound.push(candidate);
+        while (retryCount < maxRetries && !processed) {
+          try {
+            const found = await findAndProcessCandidate(
+              page,
+              candidate.candidateEmail,
+              candidate,
+            );
+
+            if (found) {
+              logger.info(`✓ Found candidate ${candidate.candidateName} in advert responses.`);
+              await markRowAsProcessed(candidate.rowIndex);
+              logger.info(`Marked row ${candidate.rowIndex} as processed in Google Sheet.`);
+              processedInThisRound.push(candidate);
+              processed = true;
+            } else {
+              logger.warn(`✗ Candidate ${candidate.candidateName} not found in this result.`);
+              notFound.push(candidate);
+              processed = true;
+            }
+          } catch (error) {
+            const errorMessage = (error as Error).message;
+            retryCount++;
+
+            if (errorMessage.toLowerCase().includes('timeout')) {
+              logger.error(
+                `Timeout error processing candidate ${candidate.candidateName}: ${errorMessage}. Retry ${retryCount}/${maxRetries}`,
+              );
+            } else {
+              logger.error(
+                `Error processing candidate ${candidate.candidateName}: ${errorMessage}. Retry ${retryCount}/${maxRetries}`,
+              );
+            }
+
+            if (retryCount < maxRetries) {
+              await randomDelay();
+            } else {
+              logger.warn(
+                `Failed to process candidate ${candidate.candidateName} (${candidate.candidateEmail}) after ${maxRetries} attempts`,
+              );
+              await markRowAsError(candidate.rowIndex);
+              failedCandidates.push({
+                name: candidate.candidateName,
+                email: candidate.candidateEmail,
+                rowIndex: candidate.rowIndex,
+                error: errorMessage,
+              });
+              processed = true;
+            }
+          }
         }
 
         await randomDelay();
@@ -84,4 +134,17 @@ export async function processAllCandidatesByAdvert(
       }
     }
   }
+
+  // Log summary of failed candidates
+  if (failedCandidates.length > 0) {
+    logger.warn(`\n=== FAILED CANDIDATES SUMMARY ===`);
+    logger.warn(`Total failed: ${failedCandidates.length}`);
+    for (const failed of failedCandidates) {
+      logger.warn(
+        `  - ${failed.name} (${failed.email}) [Row ${failed.rowIndex}]: ${failed.error}`,
+      );
+    }
+  }
+
+  return failedCandidates;
 }

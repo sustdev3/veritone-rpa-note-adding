@@ -7,17 +7,17 @@ export interface BrowserSession {
 }
 
 export async function randomDelay(): Promise<void> {
-  const ms = Math.random() * 1000 + 3000; // 3000–4000ms
+  const ms = Math.random() * 1000 + 2000; // 2000–3000ms
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export async function cleanupSession(session: BrowserSession): Promise<void> {
   try {
     await randomDelay();
-    logger.info("Navigating to manage adverts...");
-    await session.page.locator("a#prim_manage").click();
+    logger.info("Clicking Home link...");
+    await session.page.click('a[href*="index.cgi"]');
     await session.page.waitForLoadState("domcontentloaded");
-    logger.info("Manage adverts page loaded.");
+    logger.info("Home page loaded.");
 
     logger.info("Clicking logout button...");
     await session.page.locator("li#logout a").click();

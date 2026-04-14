@@ -107,3 +107,20 @@ export async function markRowAsProcessed(rowIndex: number): Promise<void> {
 
   logger.info(`Row ${rowIndex} marked as processed`);
 }
+
+export async function markRowAsError(rowIndex: number): Promise<void> {
+  logger.info(`Marking row ${rowIndex} as error...`);
+
+  const { sheets, sheetId } = await getAuthenticatedSheets();
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: sheetId,
+    range: `Sheet1!J${rowIndex}`,
+    valueInputOption: "RAW",
+    requestBody: {
+      values: [["error"]],
+    },
+  });
+
+  logger.info(`Row ${rowIndex} marked as error`);
+}
