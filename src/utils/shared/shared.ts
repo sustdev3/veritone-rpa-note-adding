@@ -14,14 +14,17 @@ export async function randomDelay(): Promise<void> {
 export async function cleanupSession(session: BrowserSession): Promise<void> {
   try {
     await randomDelay();
+    logger.info("Navigating to manage adverts...");
+    await session.page.locator("a#prim_manage").click();
+    await session.page.waitForLoadState("domcontentloaded");
+    logger.info("Manage adverts page loaded.");
+
     logger.info("Clicking logout button...");
     await session.page.locator("li#logout a").click();
     await session.page.waitForURL(/login\.cgi/, { timeout: 10000 });
     logger.info("Logged out successfully. Login page confirmed.");
   } catch (err) {
-    logger.warn(
-      `Logout did not complete cleanly: ${(err as Error).message}`,
-    );
+    logger.warn(`Logout did not complete cleanly: ${(err as Error).message}`);
   }
 
   logger.info("Closing browser...");

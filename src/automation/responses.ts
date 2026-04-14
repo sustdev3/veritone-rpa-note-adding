@@ -1,6 +1,7 @@
 import { Page } from "playwright";
 import logger from "../utils/logger";
 import { randomDelay } from "../utils/shared/shared";
+import { CandidateRow } from "../services/sheets";
 
 export async function openResponsesTab(page: Page): Promise<void> {
   logger.info("Clicking Responses tab...");
@@ -67,7 +68,7 @@ async function selectCandidate(page: Page): Promise<boolean> {
   return true;
 }
 
-async function enterNotes(page: Page): Promise<void> {
+async function enterNotes(page: Page, row: CandidateRow): Promise<void> {
   logger.info("Confirming note fields are available...");
 
   const textArea = page.locator("#add_note textarea");
@@ -78,21 +79,64 @@ async function enterNotes(page: Page): Promise<void> {
   await button.waitFor({ state: "visible" });
   logger.info("Found note button.");
 
+  const timestamp = new Date().toLocaleString('en-AU', {
+    day: 'numeric', month: 'short', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', hour12: false
+  });
+
+  const noteContent = [
+    `--- Screening Form Response (${timestamp}) ---`,
+    `Suburb: ${row.suburb}`,
+    `Car & Licence: ${row.carLicence}`,
+    `Fulltime Hours: ${row.fulltimeHours}`,
+    `Immediate Start: ${row.immediateStart}`,
+    `Preferred Shift: ${row.preferredShift}`,
+    `---`,
+  ].join('\n');
+
+  logger.info("Counting existing notes before submission...");
+  const notesBeforeCount = await page.locator('ul.notes-list li.note').count();
+  logger.info(`Notes before: ${notesBeforeCount}`);
+
+  logger.info("Typing note content into textarea...");
+  const lines = noteContent.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].length > 0) {
+      await page.locator('#add_note textarea').pressSequentially(lines[i], { delay: 30 });
+    }
+    if (i < lines.length - 1) {
+      await page.keyboard.press('Enter');
+    }
+  }
+  logger.info("Note content entered successfully.");
+
+  logger.info("Clicking submit button...");
+  await button.click();
+
+  logger.info("Waiting for note to appear in notes list...");
+  await page.waitForFunction(
+    (before) => document.querySelectorAll('ul.notes-list li.note').length > before,
+    notesBeforeCount,
+    { timeout: 10000, polling: 500 }
+  );
+  logger.info("Note saved successfully.");
+
   logger.info("Closing candidate profile modal...");
   await page.locator("a.profile-close").click();
-  await page.waitForTimeout(500);
+  logger.info("Candidate profile modal closed.");
 }
 
 export async function findAndProcessCandidate(
   page: Page,
   candidateEmail: string,
+  row: CandidateRow,
 ): Promise<boolean> {
   await searchCandidate(page, candidateEmail);
 
   const found = await selectCandidate(page);
 
   if (found) {
-    await enterNotes(page);
+    await enterNotes(page, row);
   }
 
   return found;

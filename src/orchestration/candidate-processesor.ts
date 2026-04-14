@@ -47,6 +47,7 @@ export async function processAllCandidatesByAdvert(
         const found = await findAndProcessCandidate(
           page,
           candidate.candidateEmail,
+          candidate,
         );
 
         if (found) {

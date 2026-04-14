@@ -7,7 +7,15 @@ export async function launchBrowser(): Promise<{
 }> {
   logger.info("Launching browser...");
 
-  const browser = await chromium.launch({ headless: false });
+  const browser = await chromium.launch({
+    headless: false,
+    args: [
+      "--no-sandbox",
+      "--disable-blink-features=AutomationControlled",
+      "--force-device-scale-factor=1",
+    ],
+  });
+
   const context = await browser.newContext({
     viewport: { width: 1600, height: 900 },
     userAgent:
