@@ -9,9 +9,11 @@ export interface CandidateRow {
   advertTitle: string;
   suburb: string;
   carLicence: string;
+  transport: string;
   fulltimeHours: string;
   immediateStart: string;
   preferredShift: string;
+  lastJobEnd: string;
   processed: string;
 }
 
@@ -52,7 +54,7 @@ export async function getUnprocessedRows(): Promise<CandidateRow[]> {
 
   const response = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: "Sheet1!A:J",
+    range: "Sheet1!A:L",
   });
 
   const rows = response.data.values || [];
@@ -67,7 +69,7 @@ export async function getUnprocessedRows(): Promise<CandidateRow[]> {
       continue;
     }
 
-    const processedStatus = (row[9] || "").toUpperCase();
+    const processedStatus = (row[11] || "").toUpperCase();
     if (processedStatus === "TRUE") {
       continue;
     }
@@ -80,10 +82,12 @@ export async function getUnprocessedRows(): Promise<CandidateRow[]> {
       advertTitle: row[3] || "",
       suburb: row[4] || "",
       carLicence: row[5] || "",
-      fulltimeHours: row[6] || "",
-      immediateStart: row[7] || "",
-      preferredShift: row[8] || "",
-      processed: row[9] || "",
+      transport: row[6] || "",
+      fulltimeHours: row[7] || "",
+      immediateStart: row[8] || "",
+      preferredShift: row[9] || "",
+      lastJobEnd: row[10] || "",
+      processed: row[11] || "",
     });
   }
 
@@ -98,7 +102,7 @@ export async function markRowAsProcessed(rowIndex: number): Promise<void> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `Sheet1!J${rowIndex}`,
+    range: `Sheet1!L${rowIndex}`,
     valueInputOption: "RAW",
     requestBody: {
       values: [["TRUE"]],
@@ -115,7 +119,7 @@ export async function markRowAsError(rowIndex: number): Promise<void> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `Sheet1!J${rowIndex}`,
+    range: `Sheet1!L${rowIndex}`,
     valueInputOption: "RAW",
     requestBody: {
       values: [["error"]],
