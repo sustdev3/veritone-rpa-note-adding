@@ -1,13 +1,13 @@
-import { Browser, Page, chromium } from "playwright";
+import { Browser, BrowserContext, Page, chromium } from "playwright";
 import logger from "./logger";
 
 export async function launchBrowser(): Promise<{
-  browser: Browser;
+  context: BrowserContext;
   page: Page;
 }> {
   logger.info("Launching browser...");
 
-  const browser = await chromium.launch({
+  const browser: Browser = await chromium.launch({
     headless: false,
     args: [
       "--no-sandbox",
@@ -22,15 +22,16 @@ export async function launchBrowser(): Promise<{
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
       "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
   });
+
   const page = await context.newPage();
 
   logger.info("Browser launched.");
-  return { browser, page };
+  return { context, page };
 }
 
-export async function closeBrowser(browser: Browser): Promise<void> {
+export async function closeBrowser(context: BrowserContext): Promise<void> {
   try {
-    await browser.close();
+    await context.close();
     logger.info("Browser closed.");
   } catch (error) {
     logger.error(`Failed to close browser: ${error}`);

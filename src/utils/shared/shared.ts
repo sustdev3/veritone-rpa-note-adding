@@ -1,9 +1,9 @@
-import { Browser, Page } from "playwright";
+import { BrowserContext, Page } from "playwright";
 import logger from "../logger";
 
 export interface BrowserSession {
   page: Page;
-  browser: Browser;
+  context: BrowserContext;
 }
 
 export async function randomDelay(): Promise<void> {
@@ -11,6 +11,20 @@ export async function randomDelay(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Navigates to the home page without logging out — used to park between batches.
+export async function navigateHome(session: BrowserSession): Promise<void> {
+  try {
+    await randomDelay();
+    logger.info("Navigating to home page (parking between batches)...");
+    await session.page.click('a[href*="index.cgi"]');
+    await session.page.waitForLoadState("domcontentloaded");
+    logger.info("Parked on home page.");
+  } catch (err) {
+    logger.warn(`Could not navigate home cleanly: ${(err as Error).message}`);
+  }
+}
+
+// Logs out and closes the browser — used at end of day only.
 export async function cleanupSession(session: BrowserSession): Promise<void> {
   try {
     await randomDelay();
@@ -28,6 +42,6 @@ export async function cleanupSession(session: BrowserSession): Promise<void> {
   }
 
   logger.info("Closing browser...");
-  await session.browser.close();
+  await session.context.close();
   logger.info("Browser closed.");
 }

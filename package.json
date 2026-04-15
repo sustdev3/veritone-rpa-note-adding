@@ -5,8 +5,10 @@
   "main": "dist/src/main.js",
   "scripts": {
     "dev": "tsx src/main.ts",
+    "schedule": "tsx src/scheduler.ts",
     "build": "tsc",
-    "start": "node dist/src/main.js"
+    "start": "node dist/src/main.js",
+    "start:schedule": "node dist/src/scheduler.js"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

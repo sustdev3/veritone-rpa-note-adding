@@ -15,6 +15,7 @@ interface FailedCandidate {
 export async function processAllCandidatesByAdvert(
   page: Page,
   candidates: CandidateRow[],
+  shouldStop: () => boolean = () => false,
 ): Promise<FailedCandidate[]> {
   const failedCandidates: FailedCandidate[] = [];
 
@@ -28,13 +29,19 @@ export async function processAllCandidatesByAdvert(
 
   // Process each advert and its candidates
   for (const [advertTitle, group] of groupedByAdvert) {
+    if (shouldStop()) {
+      logger.info(`[Scheduler] Stop signal received before advert "${advertTitle}". Deferring remaining candidates to next run.`);
+      break;
+    }
+
     logger.info(`Processing advert: "${advertTitle}" with ${group.length} candidate(s)`);
 
     let remainingCandidates = [...group];
     let resultIndex = 0;
     let totalResults = 0;
+    let stopped = false;
 
-    while (remainingCandidates.length > 0) {
+    while (remainingCandidates.length > 0 && !stopped) {
       const { advertId, totalResults: total } = await navigateToAdvert(
         page,
         advertTitle,
@@ -50,6 +57,12 @@ export async function processAllCandidatesByAdvert(
       const processedInThisRound: CandidateRow[] = [];
 
       for (const candidate of remainingCandidates) {
+        if (shouldStop()) {
+          logger.info(`[Scheduler] Stop signal received after finishing previous candidate. Deferring "${candidate.candidateName}" and remaining to next run.`);
+          stopped = true;
+          break;
+        }
+
         logger.info(
           `Searching for candidate: ${candidate.candidateName} (${candidate.candidateEmail})`,
         );

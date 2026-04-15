@@ -15,6 +15,8 @@ const logFormat = winston.format.combine(
   ),
 );
 
+const logFilePath = path.join(logsDir, "rpa.log");
+
 const logger = winston.createLogger({
   level: "info",
   transports: [
@@ -22,10 +24,15 @@ const logger = winston.createLogger({
       format: winston.format.combine(winston.format.colorize(), logFormat),
     }),
     new winston.transports.File({
-      filename: path.join(logsDir, "rpa.log"),
+      filename: logFilePath,
       format: logFormat,
     }),
   ],
 });
+
+// Clears the log file so each session contains only the current run's output.
+export function resetLogFile(): void {
+  fs.writeFileSync(logFilePath, "");
+}
 
 export default logger;
