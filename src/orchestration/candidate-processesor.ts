@@ -21,14 +21,21 @@ interface FailedCandidate {
   reason: string;
 }
 
+export interface AdvertRunResult {
+  adrefNo: string;
+  advertTitle: string;
+  candidatesProcessed: number;
+}
+
 async function processGroupInAdvert(
   page: Page,
   group: CandidateRow[],
   advertLabel: string,
   shouldStop: () => boolean,
-): Promise<CandidateRow[]> {
+): Promise<{ notFound: CandidateRow[]; processedCount: number }> {
   // Returns candidates that were NOT found in this advert (for fallback iteration)
   const notFound: CandidateRow[] = [];
+  let processedCount = 0;
 
   await openResponsesTab(page);
 
@@ -48,6 +55,7 @@ async function processGroupInAdvert(
         logger.info(`✓ Processed ${candidate.candidateName} in ${advertLabel}.`);
         await markRowAsProcessed(candidate.rowIndex);
         logger.info(`Marked row ${candidate.rowIndex} as processed.`);
+        processedCount++;
       } else {
         logger.warn(`✗ ${candidate.candidateName} not found in ${advertLabel}.`);
         notFound.push(candidate);
@@ -61,15 +69,16 @@ async function processGroupInAdvert(
     await randomDelay();
   }
 
-  return notFound;
+  return { notFound, processedCount };
 }
 
 export async function processAllCandidatesByAdvert(
   page: Page,
   candidates: CandidateRow[],
   shouldStop: () => boolean = () => false,
-): Promise<FailedCandidate[]> {
+): Promise<{ failed: FailedCandidate[]; advertResults: AdvertRunResult[] }> {
   const failedCandidates: FailedCandidate[] = [];
+  const advertResults: AdvertRunResult[] = [];
 
   // --- Phase 1: candidates with adref_no — search directly by adref ---
 
@@ -102,20 +111,24 @@ export async function processAllCandidatesByAdvert(
 
     await navigateToManageAdverts(page);
 
-    const advertFound = await searchAndNavigateToAdvert(page, adrefNo, advertHint);
+    const chosenAdvert = await searchAndNavigateToAdvert(page, adrefNo, advertHint);
 
-    if (!advertFound) {
+    if (!chosenAdvert) {
       logger.warn(`No advert found for adref_no "${adrefNo}" — adding ${group.length} candidate(s) to 30-day fallback`);
       fallbackCandidates.push(...group);
       continue;
     }
 
-    const notFoundInAdvert = await processGroupInAdvert(
+    const { notFound: notFoundInAdvert, processedCount } = await processGroupInAdvert(
       page,
       group,
       `adref_no "${adrefNo}"`,
       shouldStop,
     );
+
+    if (processedCount > 0) {
+      advertResults.push({ adrefNo, advertTitle: chosenAdvert.jobTitle, candidatesProcessed: processedCount });
+    }
 
     // Candidates not found in the targeted advert fall through to the 30-day iteration
     if (notFoundInAdvert.length > 0) {
@@ -149,12 +162,17 @@ export async function processAllCandidatesByAdvert(
       logger.info(`Opening advert "${advert.jobTitle}" (ID: ${advert.advertId})`);
       await navigateToAdvertById(page, advert.advertId, advert.pageNumber);
 
-      const stillNotFound = await processGroupInAdvert(
+      const { notFound: stillNotFound, processedCount } = await processGroupInAdvert(
         page,
         remainingCandidates,
         `advert "${advert.jobTitle}"`,
         shouldStop,
       );
+
+      if (processedCount > 0) {
+        // Phase 2 adverts have no adref_no — use advertId as the reference
+        advertResults.push({ adrefNo: advert.advertId, advertTitle: advert.jobTitle, candidatesProcessed: processedCount });
+      }
 
       remainingCandidates = stillNotFound;
 
@@ -190,5 +208,5 @@ export async function processAllCandidatesByAdvert(
     }
   }
 
-  return failedCandidates;
+  return { failed: failedCandidates, advertResults };
 }

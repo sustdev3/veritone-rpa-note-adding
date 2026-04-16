@@ -2,12 +2,14 @@ import dotenv from "dotenv";
 import { launchBrowser } from "./utils/browser";
 import { login } from "./automation/login";
 import { getUnprocessedRows } from "./services/sheets";
-import { processAllCandidatesByAdvert } from "./orchestration/candidate-processesor";
+import { processAllCandidatesByAdvert, AdvertRunResult } from "./orchestration/candidate-processesor";
 import { cleanupSession, BrowserSession } from "./utils/shared/shared";
 import logger, { resetLogFile } from "./utils/logger";
 import { sendErrorEmail } from "./services/email";
 
 dotenv.config();
+
+export { AdvertRunResult };
 
 export function aestTimestamp(): string {
   return new Date().toLocaleString("en-AU", {
@@ -30,19 +32,19 @@ export async function launchAndLogin(): Promise<BrowserSession> {
   return session;
 }
 
-// Returns true if candidates were found and processed, false if the sheet had nothing to do.
+// Returns advertResults from this batch, or null if the sheet had nothing to do.
 export async function runBatch(
   session: BrowserSession,
   shouldStop: () => boolean = () => false,
-): Promise<boolean> {
+): Promise<AdvertRunResult[] | null> {
   const candidates = await getUnprocessedRows();
 
   if (candidates.length === 0) {
     logger.info("No unprocessed candidates found in the sheet.");
-    return false;
+    return null;
   }
 
-  const failedCandidates = await processAllCandidatesByAdvert(
+  const { failed: failedCandidates, advertResults } = await processAllCandidatesByAdvert(
     session.page,
     candidates,
     shouldStop,
@@ -60,10 +62,9 @@ export async function runBatch(
     );
   }
 
-  return true;
+  return advertResults;
 }
 
 export async function logoutAndClose(session: BrowserSession): Promise<void> {
   await cleanupSession(session);
 }
-

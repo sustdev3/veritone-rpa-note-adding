@@ -3,7 +3,8 @@ import { DateTime } from "luxon";
 import logger from "./utils/logger";
 import { navigateHome } from "./utils/shared/shared";
 import { launchAndLogin, runBatch, logoutAndClose, aestTimestamp } from "./main";
-import { sendErrorEmail } from "./services/email";
+import { sendErrorEmail, sendSuccessReportEmail } from "./services/email";
+import { AdvertRunResult } from "./main";
 
 dotenv.config();
 
@@ -70,6 +71,7 @@ async function runDay(): Promise<void> {
   logger.info(`[Scheduler] Day session starting at ${aestTimestamp()} AEST`);
 
   const session = await launchAndLogin();
+  const allAdvertResults: AdvertRunResult[] = [];
 
   try {
     while (true) {
@@ -99,12 +101,13 @@ async function runDay(): Promise<void> {
         return batchExpired || endOfDay;
       };
 
-      const hadCandidates = await runBatch(session, shouldStop);
+      const batchResults = await runBatch(session, shouldStop);
+      if (batchResults) allAdvertResults.push(...batchResults);
 
       const batchEndedAt = nowAest();
       const batchDurationMs = Date.now() - batchStart;
 
-      if (!hadCandidates) {
+      if (!batchResults) {
         // Exited early — no candidates in the sheet
         const remainingInWindowMs = batchDeadlineMs - Date.now();
 
@@ -135,6 +138,7 @@ async function runDay(): Promise<void> {
         );
       }
 
+
       if (isPastEndOfDay()) {
         logger.info("[Scheduler] Past 6:00pm AEST after batch — ending day session.");
         break;
@@ -151,6 +155,7 @@ async function runDay(): Promise<void> {
     }
   } finally {
     logger.info(`[Scheduler] Logging out — day session ended at ${aestTimestamp()} AEST`);
+    await sendSuccessReportEmail(allAdvertResults);
     await logoutAndClose(session);
   }
 

@@ -11,7 +11,7 @@ Automates adding candidate screening notes into the [AD Courier](https://adcouri
 - **adref_no search** — searches for the advert directly by reference number, filtered to the lookback window, with hint-based disambiguation when multiple results exist
 - **Full iteration fallback** — if adref_no search yields no valid result, iterates all adverts posted within `LOOKBACK_DAYS` and checks each one for the candidate
 - **3-strike attempt tracking** — candidates not found increment a counter (`1` → `2` → `ERROR`) across runs rather than failing immediately
-- **Email notifications** — sends a failure summary via Gmail SMTP after each batch; also fires on breaking/unhandled errors
+- **Email notifications** — sends a per-advert run report at end of day and a failure summary after any batch with errors; also fires on breaking/unhandled errors
 - **Business-hours scheduler** — self-pacing scheduler runs during AEST business hours with randomised intervals; bypassed in testing mode
 - **Session-scoped logging** — `logs/rpa.log` always reflects the most recent session only
 
@@ -186,6 +186,7 @@ Logs are written to `logs/rpa.log` and to the console. The log file is **reset a
 | Breaking error inside `runBatch()` | Error email sent with full stack trace |
 | Uncaught exception / rejection | Crash email sent; process exits (PM2 restarts) |
 | Email credentials missing | Warning logged; email skipped silently |
+| End of day session | Run report email sent listing each advert processed (date, reference number, title, candidate count) |
 
 ---
 
