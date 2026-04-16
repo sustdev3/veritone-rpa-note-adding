@@ -8,11 +8,12 @@ Automates adding candidate screening notes into the [AD Courier](https://adcouri
 
 - **Google Sheets integration** — reads candidate data and writes back processed/error status
 - **Playwright browser automation** — headless Chromium login, advert navigation, and note entry
-- **Multi-advert fallback** — if a candidate isn't found in the first advert result, tries subsequent results automatically
-- **Retry logic** — up to 3 attempts per candidate before marking as errored
-- **Email notifications** — sends a failure summary via Gmail SMTP after each run; also fires on breaking/unhandled errors
-- **Business-hours scheduler** — self-pacing scheduler runs during AEST business hours with randomised intervals
-- **Session-scoped logging** — `logs/rpa.log` always reflects the most recent run only
+- **adref_no search** — searches for the advert directly by reference number, filtered to the lookback window, with hint-based disambiguation when multiple results exist
+- **Full iteration fallback** — if adref_no search yields no valid result, iterates all adverts posted within `LOOKBACK_DAYS` and checks each one for the candidate
+- **3-strike attempt tracking** — candidates not found increment a counter (`1` → `2` → `ERROR`) across runs rather than failing immediately
+- **Email notifications** — sends a failure summary via Gmail SMTP after each batch; also fires on breaking/unhandled errors
+- **Business-hours scheduler** — self-pacing scheduler runs during AEST business hours with randomised intervals; bypassed in testing mode
+- **Session-scoped logging** — `logs/rpa.log` always reflects the most recent session only
 
 ---
 
@@ -20,14 +21,14 @@ Automates adding candidate screening notes into the [AD Courier](https://adcouri
 
 ```
 src/
-├── main.ts                          # Entry point; exports runRpa()
-├── scheduler.ts                     # Business-hours scheduler (AEST)
+├── main.ts                          # Shared functions (launchAndLogin, runBatch, logoutAndClose)
+├── scheduler.ts                     # Entry point — business-hours scheduler (AEST)
 ├── automation/
 │   ├── login.ts                     # AD Courier login
-│   ├── adverts.ts                   # Advert search and navigation
+│   ├── adverts.ts                   # adref_no search, date filtering, hint matching, full iteration
 │   └── responses.ts                 # Candidate lookup and note insertion
 ├── orchestration/
-│   └── candidate-processesor.ts    # Groups candidates by advert; retry logic
+│   └── candidate-processesor.ts    # Phase 1 (adref_no) and Phase 2 (fallback) orchestration
 ├── services/
 │   ├── email.ts                     # Nodemailer Gmail wrapper
 │   └── sheets.ts                    # Google Sheets API integration
@@ -43,7 +44,7 @@ src/
 ## Prerequisites
 
 - **Node.js** 18+
-- **Playwright** Chromium (installed automatically via `npx playwright install chromium`)
+- **Playwright** Chromium (installed via `npx playwright install chromium`)
 - A **Google Cloud service account** with Sheets API access and the sheet shared to its email
 - A **Gmail account** with an [App Password](https://support.google.com/accounts/answer/185833) for SMTP
 
@@ -58,13 +59,11 @@ npm install
 npx playwright install chromium
 ```
 
-2. Copy the example environment file and fill in your credentials:
+2. Copy the template and fill in your credentials:
 
 ```bash
-cp .env.example .env
+cp .env.template .env
 ```
-
-`.env` fields:
 
 | Variable | Description |
 |---|---|
@@ -75,39 +74,106 @@ cp .env.example .env
 | `ADCOURIER_PASSWORD` | AD Courier login password |
 | `EMAIL_USER` | Gmail address for outbound notifications |
 | `EMAIL_PASS` | Gmail App Password (not your account password) |
+| `RUN_MODE` | `testing` (start immediately) or `production` (enforce 7am–6pm AEST) |
+| `LOOKBACK_DAYS` | Days back to search for adverts in both phases (default: `30`) |
 
-> Email variables are optional. If omitted, email notifications are silently skipped.
+> `EMAIL_USER` and `EMAIL_PASS` are optional — if omitted, email notifications are silently skipped.
 
 ---
 
 ## Running
 
-### One-off run
+### Locally (testing)
+
+`.env` ships with `RUN_MODE=testing` — the scheduler starts immediately without waiting for business hours.
 
 ```bash
-npm run dev          # TypeScript (development)
-npm run build && npm start   # Compiled JS (production)
+npm run dev
 ```
 
-### Scheduled run (AEST business hours)
+### Production (GCP)
+
+Set `RUN_MODE=production` in `.env` before deploying.
 
 ```bash
-npm run schedule              # TypeScript (development)
-npm run build && npm run start:schedule   # Compiled JS (production)
+npm run build
+pm2 start dist/src/scheduler.js --name s1hr-rpa
+pm2 save
+pm2 startup
 ```
 
-The scheduler:
-- Fires the **first run** at a random time between **6:45am and 7:15am AEST**
-- Waits a **random 50–70 minutes** between subsequent runs
-- Stops scheduling new runs once a run would begin at or after **6:00pm AEST**
-- Automatically skips weekends and resumes the next weekday morning
-- If started mid-business-day, waits a random 50–70 minutes before the first run
+---
+
+## Candidate Processing Flow
+
+Each batch runs two phases:
+
+### Phase 1 — adref_no search
+
+Candidates are grouped by `adref_no`. For each group:
+
+1. Search Manage Adverts by `adref_no`
+2. Filter results to those posted within `LOOKBACK_DAYS`
+3. No results within window → group falls through to Phase 2
+4. Among valid results, find the advert whose title contains `advert_hint`
+5. No hint match → use the most recent result (with a warning logged)
+6. Open the Responses tab, find each candidate by email, add note, mark row `TRUE`
+7. Candidate not found in that advert → falls through to Phase 2
+
+### Phase 2 — full iteration fallback
+
+For candidates with no `adref_no`, or those not found in Phase 1:
+
+1. Paginate through all adverts posted within `LOOKBACK_DAYS`
+2. Open each advert and search remaining candidates by email
+3. Stops early once all remaining candidates are found
+4. Still not found after all adverts → attempt counter incremented in the sheet
+
+### Attempt tracking
+
+| Value in col M | Meaning |
+|---|---|
+| `""` | Not yet attempted |
+| `"1"` | Failed 1st batch — will retry |
+| `"2"` | Failed 2nd batch — will retry |
+| `"ERROR"` | Failed 3rd batch — excluded from future runs, flagged for manual review |
+
+---
+
+## Google Sheet Columns
+
+Range: `Sheet1!A:M`
+
+| Col | Field |
+|---|---|
+| A | timestamp |
+| B | candidate_email |
+| C | candidate_name |
+| D | adref_no |
+| E | advert_hint |
+| F | suburb |
+| G | car_licence |
+| H | transport |
+| I | fulltime_hours |
+| J | immediate_start |
+| K | preferred_shift |
+| L | last_job_end |
+| M | processed |
+
+---
+
+## Scheduler
+
+- **Production:** first batch at a random time between **6:45am–7:15am AEST**; **50–70 minute** random gap between batches; stops at **6pm AEST**; skips weekends
+- **Testing:** starts immediately, no 6pm cutoff, no weekend skip
+- Each batch runs for up to **60 minutes** — `shouldStop()` is checked between candidates, never mid-candidate
+- The browser stays open all day and is only closed once at end of session
 
 ---
 
 ## Logging
 
-Logs are written to `logs/rpa.log` and to the console. The log file is **reset after each successful login**, so it always contains the output of the current session only. Log files are excluded from version control.
+Logs are written to `logs/rpa.log` and to the console. The log file is **reset after each successful login**, so it always reflects the current session only. Log files are excluded from version control.
 
 ---
 
@@ -115,16 +181,11 @@ Logs are written to `logs/rpa.log` and to the console. The log file is **reset a
 
 | Scenario | Behaviour |
 |---|---|
-| Candidate not found after 3 retries | Marked `error` in sheet; included in failure summary email |
-| Breaking error inside `runRpa()` | Error email sent with full stack trace |
-| Unhandled exception / rejection (direct run) | Crash email sent; process exits |
+| Candidate not found this batch | Attempt counter incremented (`""` → `"1"` → `"2"` → `"ERROR"`) |
+| Candidate reaches `"ERROR"` | Excluded from future runs; included in failure summary email |
+| Breaking error inside `runBatch()` | Error email sent with full stack trace |
+| Uncaught exception / rejection | Crash email sent; process exits (PM2 restarts) |
 | Email credentials missing | Warning logged; email skipped silently |
-
----
-
-## Tests
-
-There are currently no automated tests. The RPA is validated by running against a live browser and Google Sheet.
 
 ---
 

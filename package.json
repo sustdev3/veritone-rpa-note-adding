@@ -2,13 +2,12 @@
   "name": "veritone-rpa-notes-adding",
   "version": "1.0.0",
   "description": "S1HR candidate screening notes automation RPA",
-  "main": "dist/src/main.js",
+  "main": "dist/src/scheduler.js",
   "scripts": {
-    "dev": "tsx src/main.ts",
-    "schedule": "tsx src/scheduler.ts",
+    "dev": "tsx src/scheduler.ts",
     "build": "tsc",
-    "start": "node dist/src/main.js",
-    "start:schedule": "node dist/src/scheduler.js"
+    "start": "node dist/src/scheduler.js",
+    "start:prod": "node dist/src/scheduler.js"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

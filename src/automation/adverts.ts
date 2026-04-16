@@ -2,77 +2,198 @@ import { Page } from "playwright";
 import logger from "../utils/logger";
 import { randomDelay } from "../utils/shared/shared";
 
-async function clickManageAdverts(page: Page): Promise<void> {
-  logger.info("Clicking Manage Adverts...");
+export interface AdvertSummary {
+  advertId: string;
+  jobTitle: string;
+  datePosted: Date;
+  pageNumber: number;
+}
+
+export async function navigateToManageAdverts(page: Page): Promise<void> {
+  logger.info("Navigating to Manage Adverts...");
   await page.click('a[href*="manage-vacancies.cgi"]');
+  await page.waitForLoadState("domcontentloaded");
+  await page.waitForSelector("table.managevacancies", { timeout: 15000 });
+  await randomDelay();
 }
 
-async function searchAdvertByTitle(
-  page: Page,
-  advertTitle: string,
-): Promise<void> {
-  logger.info(`Searching for advert: "${advertTitle}"`);
+function parseAdvertDate(raw: string): Date | null {
+  // Try "d MMM yy HH:mm" e.g. "10 Apr 26 19:00"
+  // Try "d MMM yyyy HH:mm" e.g. "10 Apr 2026 19:00"
+  const match = raw.match(/^(\d{1,2})\s+(\w{3})\s+(\d{2,4})\s+(\d{2}):(\d{2})$/);
+  if (!match) return null;
 
-  await page.locator("input[id='searchbar_keywords']").clear();
-  await page
-    .locator("input[id='searchbar_keywords']")
-    .pressSequentially(advertTitle, { delay: 80 });
-  await page.click("button[class='searchsubmit']");
-
-  logger.info("Waiting for results table to appear...");
-  await page.waitForSelector("table.managevacancies");
+  const [, day, mon, yearRaw, hour, min] = match;
+  const year = yearRaw.length === 2 ? 2000 + parseInt(yearRaw) : parseInt(yearRaw);
+  const dateStr = `${day} ${mon} ${year} ${hour}:${min}`;
+  const parsed = new Date(dateStr);
+  return isNaN(parsed.getTime()) ? null : parsed;
 }
 
-async function selectAdvertResult(
-  page: Page,
-  resultIndex: number = 0,
-): Promise<{ advertId: string; totalResults: number }> {
-  logger.info("Selecting advert result...");
-  const links = await page.locator("a.jobtitle.no_dragdrop").all();
+export async function readRecentAdverts(page: Page, lookbackDays = parseInt(process.env.LOOKBACK_DAYS ?? "30", 10)): Promise<AdvertSummary[]> {
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - lookbackDays);
 
-  if (links.length === 0) {
-    throw new Error("No adverts found for title: {advertTitle}");
+  const collected: AdvertSummary[] = [];
+  let currentPage = 1;
+  let stopPaginating = false;
+
+  while (true) {
+    const rows = await page.evaluate(() => {
+      const results: { advertId: string | null; jobTitle: string; rawDate: string }[] = [];
+      const rowEls = Array.from(document.querySelectorAll("tr.va-top.advert.last"));
+      for (const row of rowEls) {
+        const titleLink = row.querySelector("a.jobtitle.no_dragdrop");
+        const href = titleLink?.getAttribute("href") ?? "";
+        const advertIdMatch = href.match(/advert_id=(\d+)/);
+        const advertId = advertIdMatch?.[1] ?? null;
+        const jobTitle = titleLink?.textContent?.trim() ?? "";
+        const tds = row.querySelectorAll("td");
+        const rawDate = tds[1]?.textContent?.trim().replace(/\s+/g, " ") ?? "";
+        results.push({ advertId, jobTitle, rawDate });
+      }
+      return results;
+    });
+
+    for (const row of rows) {
+      if (!row.advertId) continue;
+
+      const datePosted = parseAdvertDate(row.rawDate);
+      if (!datePosted) {
+        logger.warn(`Could not parse date "${row.rawDate}" for advert "${row.jobTitle}" — skipping`);
+        continue;
+      }
+
+      if (datePosted < cutoff) {
+        stopPaginating = true;
+        break;
+      }
+
+      collected.push({ advertId: row.advertId, jobTitle: row.jobTitle, datePosted, pageNumber: currentPage });
+    }
+
+    if (stopPaginating) break;
+
+    const nextPageNum = currentPage + 1;
+    const nextLink = page.locator(".paginator a").filter({ hasText: new RegExp(`^${nextPageNum}$`) }).first();
+    const exists = await nextLink.count() > 0;
+    if (!exists) break;
+
+    await randomDelay();
+    await nextLink.click();
+    await page.waitForLoadState("domcontentloaded");
+    currentPage++;
   }
 
-  if (resultIndex >= links.length) {
-    throw new Error(
-      `Result index ${resultIndex} out of range. Only ${links.length} advert(s) found.`,
-    );
+  collected.sort((a, b) => b.datePosted.getTime() - a.datePosted.getTime());
+
+  logger.info(`Found ${collected.length} adverts in last ${lookbackDays} days`);
+  return collected;
+}
+
+// Navigates to the page of the manage adverts table that contains the advert,
+// then clicks the advert link. Assumes we are already on the Manage Adverts page.
+export async function navigateToAdvertById(page: Page, advertId: string, pageNumber: number): Promise<void> {
+  logger.info(`Navigating to advert ID: ${advertId} (on page ${pageNumber})`);
+
+  // Paginate to the correct page if not already on it
+  if (pageNumber > 1) {
+    const pageLink = page.locator(".paginator a").filter({ hasText: new RegExp(`^${pageNumber}$`) }).first();
+    const exists = await pageLink.count() > 0;
+    if (!exists) {
+      throw new Error(`Paginator link for page ${pageNumber} not found`);
+    }
+    await pageLink.click();
+    await page.waitForLoadState("domcontentloaded");
+    await page.waitForSelector("table.managevacancies", { timeout: 15000 });
+    await randomDelay();
   }
 
-  const href = await links[resultIndex].getAttribute("href");
-  if (!href) {
-    throw new Error("Unable to extract href from selected advert");
-  }
-
-  const match = href.match(/advert_id=(\d+)/);
-  if (!match || !match[1]) {
-    throw new Error(`Unable to extract advert_id from href: ${href}`);
-  }
-
-  const advertId = match[1];
-  logger.info(
-    `Selected advert with ID: ${advertId} (result ${resultIndex + 1}/${links.length})`,
-  );
-
-  logger.info("Clicking advert link and waiting for page load...");
-  await links[resultIndex].click();
+  await page.click(`a.jobtitle.no_dragdrop[href*="advert_id=${advertId}"]`);
   await page.waitForLoadState("networkidle", { timeout: 15000 });
-
-  return { advertId, totalResults: links.length };
+  await randomDelay();
 }
 
-export async function navigateToAdvert(
-  page: Page,
-  advertTitle: string,
-  resultIndex: number = 0,
-): Promise<{ advertId: string; totalResults: number }> {
-  await clickManageAdverts(page);
+// Searches by adref_no, filters results to the lookback window, then uses advertHint
+// to pick the correct advert among those. Navigates to the matched advert.
+// Returns true if an advert was found and navigated to, false if none pass the filters.
+export async function searchAndNavigateToAdvert(page: Page, adrefNo: string, advertHint: string): Promise<boolean> {
+  const lookbackDays = parseInt(process.env.LOOKBACK_DAYS ?? "30", 10);
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - lookbackDays);
+
+  logger.info(`Searching for advert by adref_no: "${adrefNo}" (hint: "${advertHint}", lookback: ${lookbackDays} days)`);
+
+  await page.locator("input#searchbar_keywords").clear();
+  await page.locator("input#searchbar_keywords").pressSequentially(adrefNo, { delay: 80 });
+  await page.click("button.searchsubmit");
+  await page.waitForSelector("table.managevacancies");
   await randomDelay();
 
-  await searchAdvertByTitle(page, advertTitle);
+  // Scrape all result rows with their dates
+  const rawResults = await page.evaluate(() => {
+    return Array.from(document.querySelectorAll("tr.va-top.advert.last")).map(row => {
+      const titleLink = row.querySelector("a.jobtitle.no_dragdrop");
+      const href = titleLink?.getAttribute("href") ?? "";
+      const advertIdMatch = href.match(/advert_id=(\d+)/);
+      const tds = row.querySelectorAll("td");
+      const rawDate = tds[1]?.textContent?.trim().replace(/\s+/g, " ") ?? "";
+      return {
+        advertId: advertIdMatch?.[1] ?? null,
+        jobTitle: titleLink?.textContent?.trim() ?? "",
+        rawDate,
+      };
+    });
+  });
+
+  if (rawResults.length === 0) {
+    logger.warn(`No adverts found for adref_no "${adrefNo}" — falling back to full iteration`);
+    await page.locator("input#searchbar_keywords").clear();
+    await page.click("button.searchsubmit");
+    await page.waitForSelector("table.managevacancies");
+    await randomDelay();
+    return false;
+  }
+
+  // Filter to results within the lookback window
+  const withinWindow = rawResults.filter(r => {
+    if (!r.advertId) return false;
+    const date = parseAdvertDate(r.rawDate);
+    if (!date) {
+      logger.warn(`Could not parse date "${r.rawDate}" for advert "${r.jobTitle}" — excluding`);
+      return false;
+    }
+    return date >= cutoff;
+  });
+
+  logger.info(`adref_no "${adrefNo}": ${rawResults.length} result(s) total, ${withinWindow.length} within lookback window`);
+
+  if (withinWindow.length === 0) {
+    logger.warn(`No results for adref_no "${adrefNo}" within the last ${lookbackDays} days — falling back to full iteration`);
+    await page.locator("input#searchbar_keywords").clear();
+    await page.click("button.searchsubmit");
+    await page.waitForSelector("table.managevacancies");
+    await randomDelay();
+    return false;
+  }
+
+  // Among results within the window, pick the one matching the hint
+  let chosen = withinWindow[0];
+  if (advertHint.trim().length > 0) {
+    const hint = advertHint.trim().toLowerCase();
+    const hintMatch = withinWindow.find(r => r.jobTitle.toLowerCase().includes(hint));
+    if (hintMatch) {
+      chosen = hintMatch;
+      logger.info(`Hint "${advertHint}" matched advert "${chosen.jobTitle}"`);
+    } else {
+      logger.warn(`Hint "${advertHint}" did not match any result within the window — using most recent: "${chosen.jobTitle}"`);
+    }
+  }
+
+  logger.info(`Navigating to advert "${chosen.jobTitle}" (advert ID: ${chosen.advertId})`);
+  await page.click(`a.jobtitle.no_dragdrop[href*="advert_id=${chosen.advertId}"]`);
+  await page.waitForLoadState("networkidle", { timeout: 15000 });
   await randomDelay();
 
-  const result = await selectAdvertResult(page, resultIndex);
-  return result;
+  return true;
 }

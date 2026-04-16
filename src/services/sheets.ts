@@ -6,7 +6,8 @@ export interface CandidateRow {
   timestamp: string;
   candidateEmail: string;
   candidateName: string;
-  advertTitle: string;
+  adrefNo: string;          // col D (index 3) — used to search for the advert
+  advertHint: string;       // col E (index 4) — used to disambiguate adref_no results
   suburb: string;
   carLicence: string;
   transport: string;
@@ -14,7 +15,7 @@ export interface CandidateRow {
   immediateStart: string;
   preferredShift: string;
   lastJobEnd: string;
-  processed: string;
+  processed: string;        // col M (index 12)
 }
 
 async function getAuthenticatedSheets() {
@@ -54,7 +55,7 @@ export async function getUnprocessedRows(): Promise<CandidateRow[]> {
 
   const response = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: "Sheet1!A:L",
+    range: "Sheet1!A:M",
   });
 
   const rows = response.data.values || [];
@@ -69,8 +70,8 @@ export async function getUnprocessedRows(): Promise<CandidateRow[]> {
       continue;
     }
 
-    const processedStatus = (row[11] || "").toUpperCase();
-    if (processedStatus === "TRUE") {
+    const processedStatus = (row[12] || "").toUpperCase();
+    if (processedStatus === "TRUE" || processedStatus === "ERROR") {
       continue;
     }
 
@@ -79,15 +80,16 @@ export async function getUnprocessedRows(): Promise<CandidateRow[]> {
       timestamp: row[0] || "",
       candidateEmail: row[1] || "",
       candidateName: row[2] || "",
-      advertTitle: row[3] || "",
-      suburb: row[4] || "",
-      carLicence: row[5] || "",
-      transport: row[6] || "",
-      fulltimeHours: row[7] || "",
-      immediateStart: row[8] || "",
-      preferredShift: row[9] || "",
-      lastJobEnd: row[10] || "",
-      processed: row[11] || "",
+      adrefNo: row[3] || "",
+      advertHint: row[4] || "",
+      suburb: row[5] || "",
+      carLicence: row[6] || "",
+      transport: row[7] || "",
+      fulltimeHours: row[8] || "",
+      immediateStart: row[9] || "",
+      preferredShift: row[10] || "",
+      lastJobEnd: row[11] || "",
+      processed: row[12] || "",
     });
   }
 
@@ -102,7 +104,7 @@ export async function markRowAsProcessed(rowIndex: number): Promise<void> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `Sheet1!L${rowIndex}`,
+    range: `Sheet1!M${rowIndex}`,
     valueInputOption: "RAW",
     requestBody: {
       values: [["TRUE"]],
@@ -112,6 +114,25 @@ export async function markRowAsProcessed(rowIndex: number): Promise<void> {
   logger.info(`Row ${rowIndex} marked as processed`);
 }
 
+export async function incrementRowAttempt(rowIndex: number, currentAttempts: string): Promise<void> {
+  const count = parseInt(currentAttempts) || 0;
+  const newValue = count >= 2 ? "ERROR" : String(count + 1);
+  logger.info(`Incrementing attempt for row ${rowIndex}: ${currentAttempts} → ${newValue}`);
+
+  const { sheets, sheetId } = await getAuthenticatedSheets();
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: sheetId,
+    range: `Sheet1!M${rowIndex}`,
+    valueInputOption: "RAW",
+    requestBody: {
+      values: [[newValue]],
+    },
+  });
+
+  logger.info(`Row ${rowIndex} attempt updated to: ${newValue}`);
+}
+
 export async function markRowAsError(rowIndex: number): Promise<void> {
   logger.info(`Marking row ${rowIndex} as error...`);
 
@@ -119,7 +140,7 @@ export async function markRowAsError(rowIndex: number): Promise<void> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `Sheet1!L${rowIndex}`,
+    range: `Sheet1!M${rowIndex}`,
     valueInputOption: "RAW",
     requestBody: {
       values: [["error"]],

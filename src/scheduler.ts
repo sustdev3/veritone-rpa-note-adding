@@ -18,6 +18,8 @@ const MAX_GAP_MINUTES = 70;
 // Each batch runs for up to 60 minutes
 const BATCH_DURATION_MINUTES = 60;
 
+const IS_TESTING = (process.env.RUN_MODE ?? "testing") === "testing";
+
 process.on("uncaughtException", async (error: Error) => {
   logger.error(`Uncaught Exception: ${error.message}`);
   logger.error(`Stack: ${error.stack}`);
@@ -48,6 +50,7 @@ function randomBetween(min: number, max: number): number {
 }
 
 function isPastEndOfDay(): boolean {
+  if (IS_TESTING) return false;
   return nowAest().hour >= BUSINESS_END_HOUR;
 }
 
@@ -167,9 +170,11 @@ function scheduleNextDay(): void {
     millisecond: 0,
   });
 
-  // Skip weekends
-  while (nextDay.weekday === 6 || nextDay.weekday === 7) {
-    nextDay = nextDay.plus({ days: 1 });
+  // Skip weekends (production only)
+  if (!IS_TESTING) {
+    while (nextDay.weekday === 6 || nextDay.weekday === 7) {
+      nextDay = nextDay.plus({ days: 1 });
+    }
   }
 
   const delayMs = msUntil(nextDay);
@@ -182,6 +187,12 @@ function scheduleNextDay(): void {
 }
 
 function start(): void {
+  if (IS_TESTING) {
+    logger.info("[Scheduler] RUN_MODE=testing — skipping business-hours window, starting immediately.");
+    runDay();
+    return;
+  }
+
   const now = nowAest();
   const startMinutes = randomBetween(FIRST_RUN_MIN_MINUTES, FIRST_RUN_MAX_MINUTES);
   const startHour = Math.floor(startMinutes / 60);

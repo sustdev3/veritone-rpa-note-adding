@@ -51,7 +51,7 @@ export async function runBatch(
   if (failedCandidates.length > 0) {
     const failedCount = failedCandidates.length;
     const failureList = failedCandidates
-      .map((f) => `- ${f.name} (${f.email}) [Row ${f.rowIndex}]: ${f.error}`)
+      .map((f) => `- ${f.name} (${f.email}) [Row ${f.rowIndex}]: ${f.reason}`)
       .join("\n");
 
     await sendErrorEmail(
@@ -67,48 +67,3 @@ export async function logoutAndClose(session: BrowserSession): Promise<void> {
   await cleanupSession(session);
 }
 
-// Standalone one-off run — used by `npm run dev` / `npm start`
-if (require.main === module) {
-  process.on("uncaughtException", async (error: Error) => {
-    logger.error(`Uncaught Exception: ${error.message}`);
-    logger.error(`Stack: ${error.stack}`);
-    await sendErrorEmail(
-      `S1HR RPA — Global Crash: ${error.message}`,
-      `${error.message}\n\nStack Trace:\n${error.stack}`,
-    );
-    process.exit(1);
-  });
-
-  process.on("unhandledRejection", async (reason: unknown) => {
-    const error = reason instanceof Error ? reason : new Error(String(reason));
-    logger.error(`Unhandled Rejection: ${error.message}`);
-    logger.error(`Stack: ${error.stack}`);
-    await sendErrorEmail(
-      `S1HR RPA — Global Crash: ${error.message}`,
-      `${error.message}\n\nStack Trace:\n${error.stack}`,
-    );
-    process.exit(1);
-  });
-
-  (async () => {
-    let session: BrowserSession | null = null;
-    try {
-      session = await launchAndLogin();
-      await runBatch(session);
-    } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      logger.error(`RPA encountered a breaking error: ${err.message}`);
-      logger.error(`Stack: ${err.stack}`);
-      await sendErrorEmail(
-        `S1HR RPA — Breaking Error`,
-        `The RPA run was aborted due to an unrecoverable error.\n\n` +
-          `Error: ${err.message}\n\nStack Trace:\n${err.stack}`,
-      );
-    } finally {
-      if (session) {
-        logger.info(`RPA session ended at ${aestTimestamp()} AEST`);
-        await logoutAndClose(session);
-      }
-    }
-  })();
-}
