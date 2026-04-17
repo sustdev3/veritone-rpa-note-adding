@@ -112,7 +112,7 @@ async function enterNotes(page: Page, row: CandidateRow): Promise<void> {
 
   const noteContent = [
     `Screening Form Response (${timestamp}) ---`,
-    `Suburb: ${row.suburb} --- Car & Licence: ${row.carLicence} --- Transport: ${row.transport} ---`,
+    `Suburb: ${row.suburb} --- Licence: ${row.carLicence} --- Transport: ${row.transport} ---`,
     `Fulltime Hours: ${row.fulltimeHours} --- Immediate Start: ${row.immediateStart} --- Preferred Shift: ${row.preferredShift} ---`,
     `Last Job End: ${row.lastJobEnd}`,
     `---`,
