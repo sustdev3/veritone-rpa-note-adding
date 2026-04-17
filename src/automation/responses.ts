@@ -105,14 +105,15 @@ async function enterNotes(page: Page, row: CandidateRow): Promise<void> {
   await randomDelay();
 
   const timestamp = new Date().toLocaleString('en-AU', {
+    timeZone: 'Australia/Sydney',
     day: 'numeric', month: 'short', year: 'numeric',
     hour: '2-digit', minute: '2-digit', hour12: false
   });
 
   const noteContent = [
-    `--- Screening Form Response (${timestamp}) ---`,
-    `Suburb: ${row.suburb} | Car & Licence: ${row.carLicence} | Transport: ${row.transport}`,
-    `Fulltime Hours: ${row.fulltimeHours} | Immediate Start: ${row.immediateStart} | Preferred Shift: ${row.preferredShift}`,
+    `Screening Form Response (${timestamp}) ---`,
+    `Suburb: ${row.suburb} --- Car & Licence: ${row.carLicence} --- Transport: ${row.transport} ---`,
+    `Fulltime Hours: ${row.fulltimeHours} --- Immediate Start: ${row.immediateStart} --- Preferred Shift: ${row.preferredShift} ---`,
     `Last Job End: ${row.lastJobEnd}`,
     `---`,
   ].join('\n');

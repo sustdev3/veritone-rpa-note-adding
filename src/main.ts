@@ -37,6 +37,12 @@ export async function runBatch(
   session: BrowserSession,
   shouldStop: () => boolean = () => false,
 ): Promise<AdvertRunResult[] | null> {
+  if (session.page.url().includes("login.cgi")) {
+    logger.warn("[Session] Session expired during idle — re-logging in...");
+    await login(session.page);
+    logger.info("[Session] Re-login successful.");
+  }
+
   const candidates = await getUnprocessedRows();
 
   if (candidates.length === 0) {

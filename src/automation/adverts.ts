@@ -1,6 +1,7 @@
 import { Page } from "playwright";
 import logger from "../utils/logger";
 import { randomDelay } from "../utils/shared/shared";
+import { login } from "./login";
 
 export interface AdvertSummary {
   advertId: string;
@@ -13,6 +14,15 @@ export async function navigateToManageAdverts(page: Page): Promise<void> {
   logger.info("Navigating to Manage Adverts...");
   await page.click('a[href*="manage-vacancies.cgi"]');
   await page.waitForLoadState("domcontentloaded");
+
+  if (page.url().includes("login.cgi")) {
+    logger.warn("[Session] Session expired — re-logging in...");
+    await login(page);
+    logger.info("[Session] Re-login successful. Retrying navigation to Manage Adverts...");
+    await page.click('a[href*="manage-vacancies.cgi"]');
+    await page.waitForLoadState("domcontentloaded");
+  }
+
   await page.waitForSelector("table.managevacancies", { timeout: 15000 });
   await randomDelay();
 }
