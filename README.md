@@ -12,6 +12,7 @@ Automates adding candidate screening notes into the [AD Courier](https://adcouri
 - **Full iteration fallback** — if adref_no search yields no valid result, iterates all adverts posted within `LOOKBACK_DAYS` and checks each one for the candidate
 - **3-strike attempt tracking** — candidates not found increment a counter (`1` → `2` → `ERROR`) across runs rather than failing immediately
 - **Email notifications** — sends a per-advert run report at end of day and a failure summary after any batch with errors; also fires on breaking/unhandled errors
+- **Answered questions summary** — at end of each day session, writes a cumulative per-advert count of answered candidates to a `Summary` tab in the same Google Sheet; used by the pre-screening RPA to populate its email report
 - **Business-hours scheduler** — self-pacing scheduler runs during AEST business hours with randomised intervals; bypassed in testing mode
 - **Session-scoped logging** — `logs/rpa.log` always reflects the most recent session only
 
@@ -31,7 +32,7 @@ src/
 │   └── candidate-processesor.ts    # Phase 1 (adref_no) and Phase 2 (fallback) orchestration
 ├── services/
 │   ├── email.ts                     # Nodemailer Gmail wrapper
-│   └── sheets.ts                    # Google Sheets API integration
+│   └── sheets.ts                    # Google Sheets API — reads Sheet1, marks rows, writes Summary tab
 └── utils/
     ├── browser.ts                   # Playwright browser lifecycle
     ├── logger.ts                    # Winston logger + resetLogFile()
@@ -140,9 +141,9 @@ For candidates with no `adref_no`, or those not found in Phase 1:
 
 ---
 
-## Google Sheet Columns
+## Google Sheet Structure
 
-Range: `Sheet1!A:M`
+### Sheet1 — Candidate responses (`Sheet1!A:M`)
 
 | Col | Field |
 |---|---|
@@ -159,6 +160,20 @@ Range: `Sheet1!A:M`
 | K | preferred_shift |
 | L | last_job_end |
 | M | processed |
+
+### Summary — Answered counts (`Summary!A:E`)
+
+Written by the RPA at end of each day session. Cumulative — merges into existing rows rather than overwriting.
+
+| Col | Field |
+|---|---|
+| A | adref_no |
+| B | advert_title |
+| C | date_posted (YYYY-MM-DD) |
+| D | total_answered |
+| E | last_updated |
+
+The composite key is `adref_no + date_posted` — two adverts with the same ref number posted on different dates are tracked as separate rows. Read by the pre-screening RPA to populate the "Number of applicants who answered questions" column in its run report.
 
 ---
 
@@ -186,7 +201,7 @@ Logs are written to `logs/rpa.log` and to the console. The log file is **reset a
 | Breaking error inside `runBatch()` | Error email sent with full stack trace |
 | Uncaught exception / rejection | Crash email sent; process exits (PM2 restarts) |
 | Email credentials missing | Warning logged; email skipped silently |
-| End of day session | Run report email sent listing each advert processed (date, reference number, title, candidate count) |
+| End of day session | Run report email sent listing each advert processed (date, reference number, title, candidate count); answered summary written to `Summary` tab |
 
 ---
 

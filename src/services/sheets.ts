@@ -149,3 +149,90 @@ export async function markRowAsError(rowIndex: number): Promise<void> {
 
   logger.info(`Row ${rowIndex} marked as error`);
 }
+
+interface SummaryEntry {
+  adrefNo: string;
+  advertTitle: string;
+  datePosted: string;
+  totalAnswered: number;
+}
+
+export async function mergeAnsweredSummary(
+  advertResults: Array<{ adrefNo: string; advertTitle: string; candidatesProcessed: number; datePosted?: string }>,
+): Promise<void> {
+  const resultsWithDate = advertResults.filter((r) => r.datePosted);
+  if (resultsWithDate.length === 0) {
+    logger.info("No advert results with dates — skipping summary write");
+    return;
+  }
+
+  logger.info("Merging answered summary into Summary tab...");
+  const { sheets, sheetId } = await getAuthenticatedSheets();
+
+  // Read existing summary rows
+  const existing = await sheets.spreadsheets.values.get({
+    spreadsheetId: sheetId,
+    range: "Summary!A2:D",
+  });
+
+  const summaryMap = new Map<string, SummaryEntry>();
+
+  for (const row of existing.data.values || []) {
+    const adrefNo = (row[0] || "").trim();
+    const datePosted = (row[2] || "").trim();
+    if (!adrefNo || !datePosted) continue;
+    const key = `${adrefNo}|${datePosted}`;
+    summaryMap.set(key, {
+      adrefNo,
+      advertTitle: row[1] || "",
+      datePosted,
+      totalAnswered: parseInt(row[3] || "0", 10),
+    });
+  }
+
+  // Merge today's results into the map
+  for (const result of resultsWithDate) {
+    const key = `${result.adrefNo}|${result.datePosted}`;
+    const existing = summaryMap.get(key);
+    if (existing) {
+      existing.totalAnswered += result.candidatesProcessed;
+    } else {
+      summaryMap.set(key, {
+        adrefNo: result.adrefNo,
+        advertTitle: result.advertTitle,
+        datePosted: result.datePosted!,
+        totalAnswered: result.candidatesProcessed,
+      });
+    }
+  }
+
+  const updatedAt = new Date().toLocaleString("en-AU", {
+    timeZone: "Australia/Sydney",
+    dateStyle: "short",
+    timeStyle: "short",
+  });
+
+  const rows = Array.from(summaryMap.values()).map((e) => [
+    e.adrefNo,
+    e.advertTitle,
+    e.datePosted,
+    e.totalAnswered,
+    updatedAt,
+  ]);
+
+  await sheets.spreadsheets.values.clear({
+    spreadsheetId: sheetId,
+    range: "Summary!A2:E",
+  });
+
+  if (rows.length > 0) {
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: sheetId,
+      range: "Summary!A2",
+      valueInputOption: "RAW",
+      requestBody: { values: rows },
+    });
+  }
+
+  logger.info(`Answered summary written — ${summaryMap.size} advert(s) tracked`);
+}

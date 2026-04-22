@@ -127,7 +127,7 @@ export async function navigateToAdvertById(page: Page, advertId: string, pageNum
 // Searches by adref_no, filters results to the lookback window, then uses advertHint
 // to pick the correct advert among those. Navigates to the matched advert.
 // Returns the chosen advert's { advertId, jobTitle } if found, or null if none pass the filters.
-export async function searchAndNavigateToAdvert(page: Page, adrefNo: string, advertHint: string): Promise<{ advertId: string; jobTitle: string } | null> {
+export async function searchAndNavigateToAdvert(page: Page, adrefNo: string, advertHint: string): Promise<{ advertId: string; jobTitle: string; datePosted: string } | null> {
   const lookbackDays = parseInt(process.env.LOOKBACK_DAYS ?? "30", 10);
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - lookbackDays);
@@ -205,5 +205,7 @@ export async function searchAndNavigateToAdvert(page: Page, adrefNo: string, adv
   await page.waitForLoadState("networkidle", { timeout: 15000 });
   await randomDelay();
 
-  return { advertId: chosen.advertId!, jobTitle: chosen.jobTitle };
+  const chosenDate = parseAdvertDate(chosen.rawDate);
+  const datePosted = chosenDate ? chosenDate.toISOString().substring(0, 10) : "";
+  return { advertId: chosen.advertId!, jobTitle: chosen.jobTitle, datePosted };
 }

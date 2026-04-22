@@ -5,6 +5,7 @@ import { navigateHome } from "./utils/shared/shared";
 import { launchAndLogin, runBatch, logoutAndClose, aestTimestamp } from "./main";
 import { sendErrorEmail, sendSuccessReportEmail } from "./services/email";
 import { AdvertRunResult } from "./main";
+import { mergeAnsweredSummary } from "./services/sheets";
 
 dotenv.config();
 
@@ -156,6 +157,11 @@ async function runDay(): Promise<void> {
   } finally {
     logger.info(`[Scheduler] Logging out — day session ended at ${aestTimestamp()} AEST`);
     await sendSuccessReportEmail(allAdvertResults);
+    try {
+      await mergeAnsweredSummary(allAdvertResults);
+    } catch (err) {
+      logger.warn(`[Scheduler] WARNING: Failed to write answered summary: ${err}`);
+    }
     await logoutAndClose(session);
   }
 

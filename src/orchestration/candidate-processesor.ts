@@ -25,6 +25,7 @@ export interface AdvertRunResult {
   adrefNo: string;
   advertTitle: string;
   candidatesProcessed: number;
+  datePosted?: string;
 }
 
 async function processGroupInAdvert(
@@ -127,7 +128,7 @@ export async function processAllCandidatesByAdvert(
     );
 
     if (processedCount > 0) {
-      advertResults.push({ adrefNo, advertTitle: chosenAdvert.jobTitle, candidatesProcessed: processedCount });
+      advertResults.push({ adrefNo, advertTitle: chosenAdvert.jobTitle, candidatesProcessed: processedCount, datePosted: chosenAdvert.datePosted });
     }
 
     // Candidates not found in the targeted advert fall through to the 30-day iteration
@@ -171,7 +172,7 @@ export async function processAllCandidatesByAdvert(
 
       if (processedCount > 0) {
         // Phase 2 adverts have no adref_no — use advertId as the reference
-        advertResults.push({ adrefNo: advert.advertId, advertTitle: advert.jobTitle, candidatesProcessed: processedCount });
+        advertResults.push({ adrefNo: advert.advertId, advertTitle: advert.jobTitle, candidatesProcessed: processedCount, datePosted: advert.datePosted.toISOString().substring(0, 10) });
       }
 
       remainingCandidates = stillNotFound;
