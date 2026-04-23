@@ -33,7 +33,7 @@ export async function login(page: Page): Promise<void> {
     .pressSequentially(password, { delay: 80 });
 
   logger.info("Submitting login form...");
-  await page.click("a#submit_button");
+  await page.click("button#submit_button");
   await randomDelay();
 
   logger.info("Waiting for successful login redirect...");
