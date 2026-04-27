@@ -169,7 +169,21 @@ export async function mergeAnsweredSummary(
   logger.info("Merging answered summary into Summary tab...");
   const { sheets, sheetId } = await getAuthenticatedSheets();
 
-  // Read existing summary rows
+  // Count ALL form respondents per adrefNo from Sheet1 — this is the true total,
+  // including candidates the RPA hasn't added notes for yet.
+  const sheet1Response = await sheets.spreadsheets.values.get({
+    spreadsheetId: sheetId,
+    range: "Sheet1!A:D",
+  });
+
+  const respondentCounts = new Map<string, number>();
+  for (const row of (sheet1Response.data.values || []).slice(1)) {
+    const adrefNo = (row[3] || "").trim();
+    if (!adrefNo) continue;
+    respondentCounts.set(adrefNo, (respondentCounts.get(adrefNo) ?? 0) + 1);
+  }
+
+  // Read existing summary rows — update their counts with fresh Sheet1 totals
   const existing = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
     range: "Summary!A2:D",
@@ -186,22 +200,20 @@ export async function mergeAnsweredSummary(
       adrefNo,
       advertTitle: row[1] || "",
       datePosted,
-      totalAnswered: parseInt(row[3] || "0", 10),
+      // Prefer the live Sheet1 count; fall back to stored value if adrefNo not in Sheet1
+      totalAnswered: respondentCounts.get(adrefNo) ?? parseInt(row[3] || "0", 10),
     });
   }
 
-  // Merge today's results into the map
+  // Add entries for adverts seen today that aren't in the Summary yet
   for (const result of resultsWithDate) {
     const key = `${result.adrefNo}|${result.datePosted}`;
-    const existing = summaryMap.get(key);
-    if (existing) {
-      existing.totalAnswered += result.candidatesProcessed;
-    } else {
+    if (!summaryMap.has(key)) {
       summaryMap.set(key, {
         adrefNo: result.adrefNo,
         advertTitle: result.advertTitle,
         datePosted: result.datePosted!,
-        totalAnswered: result.candidatesProcessed,
+        totalAnswered: respondentCounts.get(result.adrefNo) ?? result.candidatesProcessed,
       });
     }
   }

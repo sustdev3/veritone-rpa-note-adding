@@ -1,20 +1,8 @@
 # veritone-rpa-note-adding
 
-Automates adding candidate screening notes into the [AD Courier](https://adcourier.com) recruitment platform on behalf of S1HR. The RPA reads unprocessed rows from a Google Sheet, logs into AD Courier via a headless browser, locates each candidate under their job advert, and inserts the screening note. Processed rows are marked in the sheet and a failure summary email is sent if any candidates could not be completed.
+Automates adding candidate screening notes into the [AD Courier](https://adcourier.com) recruitment platform on behalf of S1HR. The RPA reads unprocessed rows from a Google Sheet, logs into AD Courier via a headless browser, locates each candidate under their job advert, and inserts the screening note. Processed rows are marked in the sheet, and a run report email is sent at the end of each day.
 
----
-
-## Features
-
-- **Google Sheets integration** — reads candidate data and writes back processed/error status
-- **Playwright browser automation** — headless Chromium login, advert navigation, and note entry
-- **adref_no search** — searches for the advert directly by reference number, filtered to the lookback window, with hint-based disambiguation when multiple results exist
-- **Full iteration fallback** — if adref_no search yields no valid result, iterates all adverts posted within `LOOKBACK_DAYS` and checks each one for the candidate
-- **3-strike attempt tracking** — candidates not found increment a counter (`1` → `2` → `ERROR`) across runs rather than failing immediately
-- **Email notifications** — sends a per-advert run report at end of day and a failure summary after any batch with errors; also fires on breaking/unhandled errors
-- **Answered questions summary** — at end of each day session, writes a cumulative per-advert count of answered candidates to a `Summary` tab in the same Google Sheet; used by the pre-screening RPA to populate its email report
-- **Business-hours scheduler** — self-pacing scheduler runs during AEST business hours with randomised intervals; bypassed in testing mode
-- **Session-scoped logging** — `logs/rpa.log` always reflects the most recent session only
+**Deployment:** GCP Compute Engine instance, managed by pm2. Runs during AEST business hours (6:45 AM – 6:00 PM), Monday–Friday, with randomised 50–70 minute gaps between batches.
 
 ---
 
@@ -23,7 +11,7 @@ Automates adding candidate screening notes into the [AD Courier](https://adcouri
 ```
 src/
 ├── main.ts                          # Shared functions (launchAndLogin, runBatch, logoutAndClose)
-├── scheduler.ts                     # Entry point — business-hours scheduler (AEST)
+├── scheduler.ts                     # Entry point — business-hours scheduler
 ├── automation/
 │   ├── login.ts                     # AD Courier login
 │   ├── adverts.ts                   # adref_no search, date filtering, hint matching, full iteration
@@ -32,7 +20,7 @@ src/
 │   └── candidate-processesor.ts    # Phase 1 (adref_no) and Phase 2 (fallback) orchestration
 ├── services/
 │   ├── email.ts                     # Nodemailer Gmail wrapper
-│   └── sheets.ts                    # Google Sheets API — reads Sheet1, marks rows, writes Summary tab
+│   └── sheets.ts                    # Google Sheets — reads Sheet1, marks rows, writes Summary tab
 └── utils/
     ├── browser.ts                   # Playwright browser lifecycle
     ├── logger.ts                    # Winston logger + resetLogFile()
@@ -45,7 +33,7 @@ src/
 ## Prerequisites
 
 - **Node.js** 18+
-- **Playwright** Chromium (installed via `npx playwright install chromium`)
+- **Playwright** Chromium (`npx playwright install chromium`)
 - A **Google Cloud service account** with Sheets API access and the sheet shared to its email
 - A **Gmail account** with an [App Password](https://support.google.com/accounts/answer/185833) for SMTP
 
@@ -53,16 +41,9 @@ src/
 
 ## Setup
 
-1. Clone the repository and install dependencies:
-
 ```bash
 npm install
 npx playwright install chromium
-```
-
-2. Copy the template and fill in your credentials:
-
-```bash
 cp .env.template .env
 ```
 
@@ -76,7 +57,7 @@ cp .env.template .env
 | `EMAIL_USER` | Gmail address for outbound notifications |
 | `EMAIL_PASS` | Gmail App Password (not your account password) |
 | `RUN_MODE` | `testing` (start immediately) or `production` (enforce 7am–6pm AEST) |
-| `LOOKBACK_DAYS` | Days back to search for adverts in both phases (default: `30`) |
+| `LOOKBACK_DAYS` | Days back to search for adverts (default: `30`) |
 
 > `EMAIL_USER` and `EMAIL_PASS` are optional — if omitted, email notifications are silently skipped.
 
@@ -94,13 +75,18 @@ npm run dev
 
 ### Production (GCP)
 
-Set `RUN_MODE=production` in `.env` before deploying.
-
 ```bash
 npm run build
 pm2 start dist/src/scheduler.js --name s1hr-rpa
 pm2 save
 pm2 startup
+```
+
+After pushing code changes:
+```bash
+git pull
+npm run build
+pm2 restart s1hr-rpa
 ```
 
 ---
@@ -137,7 +123,7 @@ For candidates with no `adref_no`, or those not found in Phase 1:
 | `""` | Not yet attempted |
 | `"1"` | Failed 1st batch — will retry |
 | `"2"` | Failed 2nd batch — will retry |
-| `"ERROR"` | Failed 3rd batch — excluded from future runs, flagged for manual review |
+| `"ERROR"` | Failed 3rd batch — excluded from future runs |
 
 ---
 
@@ -161,9 +147,9 @@ For candidates with no `adref_no`, or those not found in Phase 1:
 | L | last_job_end |
 | M | processed |
 
-### Summary — Answered counts (`Summary!A:E`)
+### Summary tab (`Summary!A:E`)
 
-Written by the RPA at end of each day session. Cumulative — merges into existing rows rather than overwriting.
+Written by the RPA at the end of each day session. Each run reads Sheet1 and counts **all rows** per `adref_no` (processed and unprocessed) to reflect the true total of form respondents — not just those the RPA has added notes for.
 
 | Col | Field |
 |---|---|
@@ -173,7 +159,7 @@ Written by the RPA at end of each day session. Cumulative — merges into existi
 | D | total_answered |
 | E | last_updated |
 
-The composite key is `adref_no + date_posted` — two adverts with the same ref number posted on different dates are tracked as separate rows. Read by the pre-screening RPA to populate the "Number of applicants who answered questions" column in its run report.
+The composite key is `adref_no + date_posted`. Read by the pre-screening RPA to populate the **Answered questions** and **% answering questions** columns in its run report.
 
 ---
 
@@ -186,12 +172,6 @@ The composite key is `adref_no + date_posted` — two adverts with the same ref 
 
 ---
 
-## Logging
-
-Logs are written to `logs/rpa.log` and to the console. The log file is **reset after each successful login**, so it always reflects the current session only. Log files are excluded from version control.
-
----
-
 ## Error Handling
 
 | Scenario | Behaviour |
@@ -201,7 +181,7 @@ Logs are written to `logs/rpa.log` and to the console. The log file is **reset a
 | Breaking error inside `runBatch()` | Error email sent with full stack trace |
 | Uncaught exception / rejection | Crash email sent; process exits (PM2 restarts) |
 | Email credentials missing | Warning logged; email skipped silently |
-| End of day session | Run report email sent listing each advert processed (date, reference number, title, candidate count); answered summary written to `Summary` tab |
+| End of day session | Run report email sent; Summary tab written to Google Sheet |
 
 ---
 
