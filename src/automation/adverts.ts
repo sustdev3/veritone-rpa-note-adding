@@ -5,6 +5,7 @@ import { login } from "./login";
 
 export interface AdvertSummary {
   advertId: string;
+  refNumber: string;
   jobTitle: string;
   datePosted: Date;
   pageNumber: number;
@@ -50,7 +51,7 @@ export async function readRecentAdverts(page: Page, lookbackDays = parseInt(proc
 
   while (true) {
     const rows = await page.evaluate(() => {
-      const results: { advertId: string | null; jobTitle: string; rawDate: string }[] = [];
+      const results: { advertId: string | null; refNumber: string; jobTitle: string; rawDate: string }[] = [];
       const rowEls = Array.from(document.querySelectorAll("tr.va-top.advert.last"));
       for (const row of rowEls) {
         const titleLink = row.querySelector("a.jobtitle.no_dragdrop");
@@ -60,7 +61,11 @@ export async function readRecentAdverts(page: Page, lookbackDays = parseInt(proc
         const jobTitle = titleLink?.textContent?.trim() ?? "";
         const tds = row.querySelectorAll("td");
         const rawDate = tds[1]?.textContent?.trim().replace(/\s+/g, " ") ?? "";
-        results.push({ advertId, jobTitle, rawDate });
+        const row2 = row.nextElementSibling;
+        const tds2 = row2?.querySelectorAll("td");
+        const refRaw = tds2?.[0]?.textContent?.trim() ?? "";
+        const refNumber = refRaw.replace(/Ref\s*No\.?:?\s*/i, "").trim();
+        results.push({ advertId, refNumber, jobTitle, rawDate });
       }
       return results;
     });
@@ -79,7 +84,7 @@ export async function readRecentAdverts(page: Page, lookbackDays = parseInt(proc
         break;
       }
 
-      collected.push({ advertId: row.advertId, jobTitle: row.jobTitle, datePosted, pageNumber: currentPage });
+      collected.push({ advertId: row.advertId, refNumber: row.refNumber, jobTitle: row.jobTitle, datePosted, pageNumber: currentPage });
     }
 
     if (stopPaginating) break;

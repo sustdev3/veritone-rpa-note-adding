@@ -150,71 +150,74 @@ export async function markRowAsError(rowIndex: number): Promise<void> {
   logger.info(`Row ${rowIndex} marked as error`);
 }
 
-interface SummaryEntry {
-  adrefNo: string;
-  advertTitle: string;
-  datePosted: string;
-  totalAnswered: number;
-}
-
 export async function mergeAnsweredSummary(
-  advertResults: Array<{ adrefNo: string; advertTitle: string; candidatesProcessed: number; datePosted?: string }>,
+  advertList: Array<{ advertId: string; refNumber: string; jobTitle: string; datePosted: Date }>,
 ): Promise<void> {
-  const resultsWithDate = advertResults.filter((r) => r.datePosted);
-  if (resultsWithDate.length === 0) {
-    logger.info("No advert results with dates — skipping summary write");
+  if (advertList.length === 0) {
+    logger.info("No adverts in advert list — skipping summary write");
     return;
   }
 
-  logger.info("Merging answered summary into Summary tab...");
+  logger.info(`Writing answered summary from ${advertList.length} advert(s) in lookback window...`);
   const { sheets, sheetId } = await getAuthenticatedSheets();
 
-  // Count ALL form respondents per adrefNo from Sheet1 — this is the true total,
-  // including candidates the RPA hasn't added notes for yet.
+  // Build adrefNo → Set<jobTitle> from the advert list (authoritative source from Veritone).
+  // Adverts without a refNumber are included in the Summary but can't be matched to Sheet1 respondents.
+  const adrefToTitles = new Map<string, Set<string>>();
+  for (const advert of advertList) {
+    if (!advert.refNumber) continue;
+    const titles = adrefToTitles.get(advert.refNumber) ?? new Set();
+    titles.add(advert.jobTitle);
+    adrefToTitles.set(advert.refNumber, titles);
+  }
+
+  // Count ALL form respondents from Sheet1 using hint matching.
   const sheet1Response = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: "Sheet1!A:D",
+    range: "Sheet1!A:E",
   });
 
   const respondentCounts = new Map<string, number>();
+
   for (const row of (sheet1Response.data.values || []).slice(1)) {
     const adrefNo = (row[3] || "").trim();
+    const advertHint = (row[4] || "").trim().toLowerCase();
     if (!adrefNo) continue;
-    respondentCounts.set(adrefNo, (respondentCounts.get(adrefNo) ?? 0) + 1);
+
+    const titles = adrefToTitles.get(adrefNo);
+    if (!titles || titles.size <= 1) {
+      respondentCounts.set(adrefNo, (respondentCounts.get(adrefNo) ?? 0) + 1);
+    } else {
+      const titlesArr = Array.from(titles);
+      const matched = (() => {
+        if (advertHint.length === 0) return titlesArr[0];
+        const hintMatches = titlesArr.filter((t) => t.toLowerCase().includes(advertHint));
+        if (hintMatches.length === 0) return titlesArr[0];
+        if (hintMatches.length === 1) return hintMatches[0];
+        return hintMatches.find((t) => t.toLowerCase().startsWith(advertHint)) ?? hintMatches[0];
+      })();
+      const key = `${adrefNo}|${matched}`;
+      respondentCounts.set(key, (respondentCounts.get(key) ?? 0) + 1);
+    }
   }
 
-  // Read existing summary rows — update their counts with fresh Sheet1 totals
-  const existing = await sheets.spreadsheets.values.get({
-    spreadsheetId: sheetId,
-    range: "Summary!A2:D",
-  });
+  const getCount = (adrefNo: string, jobTitle: string): number => {
+    if (!adrefNo) return 0;
+    const titles = adrefToTitles.get(adrefNo);
+    if (!titles || titles.size <= 1) return respondentCounts.get(adrefNo) ?? 0;
+    return respondentCounts.get(`${adrefNo}|${jobTitle}`) ?? 0;
+  };
 
-  const summaryMap = new Map<string, SummaryEntry>();
-
-  for (const row of existing.data.values || []) {
-    const adrefNo = (row[0] || "").trim();
-    const datePosted = (row[2] || "").trim();
-    if (!adrefNo || !datePosted) continue;
-    const key = `${adrefNo}|${datePosted}`;
-    summaryMap.set(key, {
-      adrefNo,
-      advertTitle: row[1] || "",
-      datePosted,
-      // Prefer the live Sheet1 count; fall back to stored value if adrefNo not in Sheet1
-      totalAnswered: respondentCounts.get(adrefNo) ?? parseInt(row[3] || "0", 10),
-    });
-  }
-
-  // Add entries for adverts seen today that aren't in the Summary yet
-  for (const result of resultsWithDate) {
-    const key = `${result.adrefNo}|${result.datePosted}`;
-    if (!summaryMap.has(key)) {
-      summaryMap.set(key, {
-        adrefNo: result.adrefNo,
-        advertTitle: result.advertTitle,
-        datePosted: result.datePosted!,
-        totalAnswered: respondentCounts.get(result.adrefNo) ?? result.candidatesProcessed,
-      });
+  // Deduplicate advert list by refNumber|jobTitle (same job may appear as multiple advertIds).
+  // For duplicates keep the most recent datePosted.
+  const summaryMap = new Map<string, { adrefNo: string; jobTitle: string; datePosted: string }>();
+  for (const advert of advertList) {
+    const adrefNo = advert.refNumber || advert.advertId;
+    const key = `${adrefNo}|${advert.jobTitle}`;
+    const dateStr = advert.datePosted.toISOString().substring(0, 10);
+    const existing = summaryMap.get(key);
+    if (!existing || dateStr > existing.datePosted) {
+      summaryMap.set(key, { adrefNo, jobTitle: advert.jobTitle, datePosted: dateStr });
     }
   }
 
@@ -226,9 +229,9 @@ export async function mergeAnsweredSummary(
 
   const rows = Array.from(summaryMap.values()).map((e) => [
     e.adrefNo,
-    e.advertTitle,
+    e.jobTitle,
     e.datePosted,
-    e.totalAnswered,
+    getCount(e.adrefNo, e.jobTitle),
     updatedAt,
   ]);
 
