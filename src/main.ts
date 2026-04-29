@@ -2,14 +2,14 @@ import dotenv from "dotenv";
 import { launchBrowser } from "./utils/browser";
 import { login } from "./automation/login";
 import { getUnprocessedRows } from "./services/sheets";
-import { processAllCandidatesByAdvert, AdvertRunResult } from "./orchestration/candidate-processesor";
+import { processAllCandidatesByAdvert, AdvertRunResult, ProcessingPhase } from "./orchestration/candidate-processesor";
 import { cleanupSession, BrowserSession } from "./utils/shared/shared";
 import logger, { resetLogFile } from "./utils/logger";
 import { sendErrorEmail } from "./services/email";
 
 dotenv.config();
 
-export { AdvertRunResult };
+export { AdvertRunResult, ProcessingPhase };
 
 export function aestTimestamp(): string {
   return new Date().toLocaleString("en-AU", {
@@ -36,6 +36,8 @@ export async function launchAndLogin(): Promise<BrowserSession> {
 export async function runBatch(
   session: BrowserSession,
   shouldStop: () => boolean = () => false,
+  phase: ProcessingPhase = 'both',
+  since?: Date,
 ): Promise<AdvertRunResult[] | null> {
   if (session.page.url().includes("login.cgi")) {
     logger.warn("[Session] Session expired during idle — re-logging in...");
@@ -43,7 +45,7 @@ export async function runBatch(
     logger.info("[Session] Re-login successful.");
   }
 
-  const candidates = await getUnprocessedRows();
+  const candidates = await getUnprocessedRows(since);
 
   if (candidates.length === 0) {
     logger.info("No unprocessed candidates found in the sheet.");
@@ -54,6 +56,7 @@ export async function runBatch(
     session.page,
     candidates,
     shouldStop,
+    phase,
   );
 
   if (failedCandidates.length > 0) {

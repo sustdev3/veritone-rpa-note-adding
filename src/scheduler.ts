@@ -1,3 +1,5 @@
+import fs from "fs";
+import path from "path";
 import dotenv from "dotenv";
 import { DateTime } from "luxon";
 import logger from "./utils/logger";
@@ -11,15 +13,18 @@ import { navigateToManageAdverts, readRecentAdverts, AdvertSummary } from "./aut
 dotenv.config();
 
 const AEST_ZONE = "Australia/Sydney";
-const BUSINESS_END_HOUR = 18;
+const STAGE1_END_HOUR = 15;  // 3:00 PM AEST
+const STAGE2_END_HOUR = parseInt(process.env.STAGE2_END_HOUR ?? "20", 10);  // 8:00 PM AEST default
 // First run window: 6:45am–7:15am AEST (expressed as minutes from midnight)
 const FIRST_RUN_MIN_MINUTES = 6 * 60 + 45;
 const FIRST_RUN_MAX_MINUTES = 7 * 60 + 15;
 // Between batches: 50–70 minute idle gap
 const MIN_GAP_MINUTES = 50;
 const MAX_GAP_MINUTES = 70;
-// Each batch runs for up to 60 minutes
+// Each Stage 1 batch runs for up to 60 minutes
 const BATCH_DURATION_MINUTES = 60;
+
+const STATE_FILE = path.resolve(process.cwd(), ".rpa-state.json");
 
 const IS_TESTING = (process.env.RUN_MODE ?? "testing") === "testing";
 
@@ -52,9 +57,14 @@ function randomBetween(min: number, max: number): number {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-function isPastEndOfDay(): boolean {
+function isPastStage1End(): boolean {
   if (IS_TESTING) return false;
-  return nowAest().hour >= BUSINESS_END_HOUR;
+  return nowAest().hour >= STAGE1_END_HOUR;
+}
+
+function isPastStage2End(): boolean {
+  if (IS_TESTING) return false;
+  return nowAest().hour >= STAGE2_END_HOUR;
 }
 
 function msUntil(target: DateTime): number {
@@ -69,6 +79,25 @@ function formatMinutes(ms: number): string {
   return `${Math.round(ms / 1000 / 60)} minutes`;
 }
 
+function readLastBatchStart(): Date | null {
+  try {
+    const raw = fs.readFileSync(STATE_FILE, "utf-8");
+    const { lastBatchStartISO } = JSON.parse(raw);
+    const d = new Date(lastBatchStartISO);
+    return isNaN(d.getTime()) ? null : d;
+  } catch {
+    return null;
+  }
+}
+
+function writeLastBatchStart(time: DateTime): void {
+  try {
+    fs.writeFileSync(STATE_FILE, JSON.stringify({ lastBatchStartISO: time.toISO() }), "utf-8");
+  } catch (err) {
+    logger.warn(`[Scheduler] WARNING: Failed to write state file: ${err}`);
+  }
+}
+
 async function runDay(): Promise<void> {
   logger.info(`[Scheduler] Day session starting at ${aestTimestamp()} AEST`);
 
@@ -76,49 +105,47 @@ async function runDay(): Promise<void> {
   const allAdvertResults: AdvertRunResult[] = [];
 
   try {
-    while (true) {
-      if (isPastEndOfDay()) {
-        logger.info("[Scheduler] Past 6:00pm AEST — ending day session.");
-        break;
-      }
+    // ── Stage 1: Phase 1 only, hourly batches, 6:45 AM – 3:00 PM ──────────────
 
+    while (!isPastStage1End()) {
       const batchStart = Date.now();
+      const batchStartTime = nowAest();
       const batchDeadlineMs = batchStart + BATCH_DURATION_MINUTES * 60 * 1000;
-      const batchEndTime = nowAest().plus({ minutes: BATCH_DURATION_MINUTES });
+      const batchEndTime = batchStartTime.plus({ minutes: BATCH_DURATION_MINUTES });
 
       logger.info(
-        `[Scheduler] Batch started at ${nowAest().toFormat("HH:mm:ss")} AEST — ` +
-        `will run until ${batchEndTime.toFormat("HH:mm:ss")} AEST (or until 6:00pm if sooner)`
+        `[Scheduler] Stage 1 batch started at ${batchStartTime.toFormat("HH:mm:ss")} AEST — ` +
+        `will run until ${batchEndTime.toFormat("HH:mm:ss")} AEST (or 3:00 PM if sooner)`
       );
 
       const shouldStop = (): boolean => {
         const batchExpired = Date.now() >= batchDeadlineMs;
         if (batchExpired) {
-          logger.info("[Scheduler] 60-minute batch window reached. Finishing current candidate then parking.");
+          logger.info("[Scheduler] 60-minute Stage 1 batch window reached. Finishing current candidate then parking.");
         }
-        const endOfDay = isPastEndOfDay();
-        if (endOfDay) {
-          logger.info("[Scheduler] 6:00pm AEST reached mid-batch. Finishing current candidate then ending day.");
+        const stage1End = isPastStage1End();
+        if (stage1End) {
+          logger.info("[Scheduler] 3:00 PM AEST reached mid-batch. Finishing current candidate then moving to Stage 2.");
         }
-        return batchExpired || endOfDay;
+        return batchExpired || stage1End;
       };
 
-      const batchResults = await runBatch(session, shouldStop);
+      const since = readLastBatchStart() ?? undefined;
+      const batchResults = await runBatch(session, shouldStop, 'phase1Only', since);
+      writeLastBatchStart(batchStartTime);
+
       if (batchResults) allAdvertResults.push(...batchResults);
 
       const batchEndedAt = nowAest();
       const batchDurationMs = Date.now() - batchStart;
 
-      if (!batchResults) {
-        // Exited early — no candidates in the sheet
-        const remainingInWindowMs = batchDeadlineMs - Date.now();
+      if (isPastStage1End()) {
+        logger.info("[Scheduler] Past 3:00 PM AEST after Stage 1 batch — moving to Stage 2.");
+        break;
+      }
 
-        if (isPastEndOfDay()) {
-          logger.info(
-            `[Scheduler] No candidates found. It is past 6:00pm AEST — ending day session now.`
-          );
-          break;
-        }
+      if (!batchResults) {
+        const remainingInWindowMs = batchDeadlineMs - Date.now();
 
         if (remainingInWindowMs > 0) {
           logger.info(
@@ -135,14 +162,13 @@ async function runDay(): Promise<void> {
         }
       } else {
         logger.info(
-          `[Scheduler] Batch finished at ${batchEndedAt.toFormat("HH:mm:ss")} AEST ` +
+          `[Scheduler] Stage 1 batch finished at ${batchEndedAt.toFormat("HH:mm:ss")} AEST ` +
           `(ran for ${formatMinutes(batchDurationMs)})`
         );
       }
 
-
-      if (isPastEndOfDay()) {
-        logger.info("[Scheduler] Past 6:00pm AEST after batch — ending day session.");
+      if (isPastStage1End()) {
+        logger.info("[Scheduler] Past 3:00 PM AEST — moving to Stage 2.");
         break;
       }
 
@@ -150,31 +176,80 @@ async function runDay(): Promise<void> {
 
       const gapMinutes = randomBetween(MIN_GAP_MINUTES, MAX_GAP_MINUTES);
       const nextBatchTime = nowAest().plus({ minutes: gapMinutes });
+
+      if (nextBatchTime.hour >= STAGE1_END_HOUR) {
+        logger.info(
+          `[Scheduler] Next Stage 1 batch would start at ${nextBatchTime.toFormat("HH:mm:ss")} AEST, ` +
+          `past Stage 1 cutoff (3:00 PM) — skipping sleep, moving directly to Stage 2.`
+        );
+        break;
+      }
+
       logger.info(
-        `[Scheduler] Next batch at ${nextBatchTime.toFormat("HH:mm:ss")} AEST (in ${gapMinutes} minutes)`
+        `[Scheduler] Next Stage 1 batch at ${nextBatchTime.toFormat("HH:mm:ss")} AEST (in ${gapMinutes} minutes)`
       );
       await sleep(gapMinutes * 60 * 1000);
     }
-  } finally {
-    logger.info(`[Scheduler] Logging out — day session ended at ${aestTimestamp()} AEST`);
-    await sendSuccessReportEmail(allAdvertResults);
 
-    let advertList: AdvertSummary[] = [];
-    try {
-      await navigateToManageAdverts(session.page);
-      advertList = await readRecentAdverts(session.page);
-    } catch (err) {
-      logger.warn(`[Scheduler] WARNING: Failed to read advert list for summary: ${err}`);
+    // ── Stage 2: Phase 2 only, full backlog pass, 3:00 PM – 8:00 PM ───────────
+
+    if (!isPastStage2End()) {
+      logger.info(`[Scheduler] Starting Stage 2 (Phase 2 fallback) at ${nowAest().toFormat("HH:mm:ss")} AEST`);
+
+      // Fresh session for Stage 2
+      await logoutAndClose(session);
+      const stage2Session = await launchAndLogin();
+
+      try {
+        const stage2ShouldStop = (): boolean => {
+          const past = isPastStage2End();
+          if (past) {
+            logger.info("[Scheduler] 8:00 PM AEST reached during Stage 2. Finishing current candidate then ending.");
+          }
+          return past;
+        };
+
+        // No `since` filter — Stage 2 processes the full unprocessed backlog
+        const stage2Results = await runBatch(stage2Session, stage2ShouldStop, 'phase2Only');
+        if (stage2Results) allAdvertResults.push(...stage2Results);
+
+        logger.info(`[Scheduler] Stage 2 complete at ${nowAest().toFormat("HH:mm:ss")} AEST`);
+      } finally {
+        await logoutAndClose(stage2Session);
+      }
+    } else {
+      logger.info("[Scheduler] Past 8:00 PM AEST — Stage 2 skipped.");
+      await logoutAndClose(session);
     }
 
-    try {
-      await mergeAnsweredSummary(advertList);
-    } catch (err) {
-      logger.warn(`[Scheduler] WARNING: Failed to write answered summary: ${err}`);
-    }
-
-    await logoutAndClose(session);
+  } catch (err) {
+    logger.error(`[Scheduler] Unexpected error in runDay: ${err}`);
+    try { await logoutAndClose(session); } catch { /* ignore */ }
+    throw err;
   }
+
+  // ── End of day ──────────────────────────────────────────────────────────────
+
+  logger.info(`[Scheduler] Day session ended at ${aestTimestamp()} AEST`);
+  await sendSuccessReportEmail(allAdvertResults);
+
+  // Re-open a temporary session just to read the advert list for the summary
+  const summarySession = await launchAndLogin();
+  let advertList: AdvertSummary[] = [];
+  try {
+    await navigateToManageAdverts(summarySession.page);
+    advertList = await readRecentAdverts(summarySession.page);
+  } catch (err) {
+    logger.warn(`[Scheduler] WARNING: Failed to read advert list for summary: ${err}`);
+  }
+
+  try {
+    await mergeAnsweredSummary(advertList);
+  } catch (err) {
+    logger.warn(`[Scheduler] WARNING: Failed to write answered summary: ${err}`);
+  }
+
+  await logoutAndClose(summarySession);
 
   scheduleNextDay();
 }
@@ -222,8 +297,8 @@ function start(): void {
 
   const todayStart = now.set({ hour: startHour, minute: startMinute, second: 0, millisecond: 0 });
 
-  if (isPastEndOfDay()) {
-    logger.info("[Scheduler] Started after 6:00pm AEST — scheduling for next business day.");
+  if (isPastStage2End()) {
+    logger.info("[Scheduler] Started after 8:00 PM AEST — scheduling for next business day.");
     scheduleNextDay();
     return;
   }

@@ -48,8 +48,18 @@ async function getAuthenticatedSheets() {
   return { sheets: google.sheets({ version: "v4", auth }), sheetId };
 }
 
-export async function getUnprocessedRows(): Promise<CandidateRow[]> {
-  logger.info("Fetching unprocessed rows from Google Sheets...");
+function parseSheetTimestamp(ts: string): Date | null {
+  if (!ts) return null;
+  const d = new Date(ts);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+export async function getUnprocessedRows(since?: Date): Promise<CandidateRow[]> {
+  if (since) {
+    logger.info(`Fetching unprocessed rows since ${since.toISOString()} from Google Sheets...`);
+  } else {
+    logger.info("Fetching unprocessed rows from Google Sheets...");
+  }
 
   const { sheets, sheetId } = await getAuthenticatedSheets();
 
@@ -71,8 +81,15 @@ export async function getUnprocessedRows(): Promise<CandidateRow[]> {
     }
 
     const processedStatus = (row[12] || "").toUpperCase();
-    if (processedStatus === "TRUE" || processedStatus === "ERROR") {
+    if (processedStatus === "TRUE" || processedStatus === "ERROR" || processedStatus === "SKIPPED") {
       continue;
+    }
+
+    if (since) {
+      const submittedAt = parseSheetTimestamp(row[0] || "");
+      if (submittedAt && submittedAt < since) {
+        continue;
+      }
     }
 
     unprocessedRows.push({
@@ -112,6 +129,23 @@ export async function markRowAsProcessed(rowIndex: number): Promise<void> {
   });
 
   logger.info(`Row ${rowIndex} marked as processed`);
+}
+
+export async function markRowAsSkipped(rowIndex: number): Promise<void> {
+  logger.info(`Marking row ${rowIndex} as skipped...`);
+
+  const { sheets, sheetId } = await getAuthenticatedSheets();
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: sheetId,
+    range: `Sheet1!M${rowIndex}`,
+    valueInputOption: "RAW",
+    requestBody: {
+      values: [["SKIPPED"]],
+    },
+  });
+
+  logger.info(`Row ${rowIndex} marked as skipped`);
 }
 
 export async function incrementRowAttempt(rowIndex: number, currentAttempts: string): Promise<void> {

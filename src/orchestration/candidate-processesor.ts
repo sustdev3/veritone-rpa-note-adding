@@ -10,6 +10,7 @@ import { openResponsesTab, findAndProcessCandidate } from "../automation/respons
 import {
   CandidateRow,
   markRowAsProcessed,
+  markRowAsSkipped,
   incrementRowAttempt,
 } from "../services/sheets";
 import { randomDelay } from "../utils/shared/shared";
@@ -20,6 +21,8 @@ interface FailedCandidate {
   rowIndex: number;
   reason: string;
 }
+
+export type ProcessingPhase = 'phase1Only' | 'phase2Only' | 'both';
 
 export interface AdvertRunResult {
   adrefNo: string;
@@ -77,14 +80,98 @@ export async function processAllCandidatesByAdvert(
   page: Page,
   candidates: CandidateRow[],
   shouldStop: () => boolean = () => false,
+  phase: ProcessingPhase = 'both',
 ): Promise<{ failed: FailedCandidate[]; advertResults: AdvertRunResult[] }> {
   const failedCandidates: FailedCandidate[] = [];
   const advertResults: AdvertRunResult[] = [];
 
+  // Skip candidates that have neither adrefNo nor advertHint — no safe way to match them to an advert
+  const skippable = candidates.filter(c => c.adrefNo.trim() === '' && c.advertHint.trim() === '');
+  const processable = candidates.filter(c => c.adrefNo.trim() !== '' || c.advertHint.trim() !== '');
+
+  for (const candidate of skippable) {
+    logger.warn(`Skipping ${candidate.candidateName} (row ${candidate.rowIndex}) — no adrefNo or advertHint`);
+    await markRowAsSkipped(candidate.rowIndex);
+  }
+
+  if (phase === 'phase2Only') {
+    logger.info(`Phase 2 only — treating all ${processable.length} candidate(s) as fallback`);
+    const fallbackCandidates: CandidateRow[] = [...processable];
+
+    if (fallbackCandidates.length === 0) {
+      return { failed: failedCandidates, advertResults };
+    }
+
+    await navigateToManageAdverts(page);
+    const allAdverts = await readRecentAdverts(page, 30);
+    logger.info(`Found ${allAdverts.length} adverts in last 30 days`);
+
+    let remainingCandidates = [...fallbackCandidates];
+    let outerStopped = false;
+
+    for (const advert of allAdverts) {
+      if (shouldStop()) {
+        logger.info(`[Scheduler] Stop signal received before advert "${advert.jobTitle}". Deferring remaining.`);
+        outerStopped = true;
+        break;
+      }
+
+      if (remainingCandidates.length === 0) break;
+
+      await navigateToManageAdverts(page);
+      logger.info(`Opening advert "${advert.jobTitle}" (ID: ${advert.advertId})`);
+      await navigateToAdvertById(page, advert.advertId, advert.pageNumber);
+
+      const { notFound: stillNotFound, processedCount } = await processGroupInAdvert(
+        page,
+        remainingCandidates,
+        `advert "${advert.jobTitle}"`,
+        shouldStop,
+      );
+
+      if (processedCount > 0) {
+        advertResults.push({ adrefNo: advert.advertId, advertTitle: advert.jobTitle, candidatesProcessed: processedCount, datePosted: advert.datePosted.toISOString().substring(0, 10) });
+      }
+
+      remainingCandidates = stillNotFound;
+
+      if (shouldStop()) {
+        outerStopped = true;
+        break;
+      }
+
+      await randomDelay();
+    }
+
+    if (remainingCandidates.length > 0 && !outerStopped) {
+      logger.warn(`${remainingCandidates.length} candidate(s) not found in any advert after full iteration:`);
+      for (const candidate of remainingCandidates) {
+        logger.warn(`  - ${candidate.candidateName} (${candidate.candidateEmail}) [Row ${candidate.rowIndex}]`);
+        await incrementRowAttempt(candidate.rowIndex, candidate.processed);
+        failedCandidates.push({
+          name: candidate.candidateName,
+          email: candidate.candidateEmail,
+          rowIndex: candidate.rowIndex,
+          reason: "Not found in any advert after full 30-day iteration",
+        });
+      }
+    }
+
+    if (failedCandidates.length > 0) {
+      logger.warn(`\n=== FAILED CANDIDATES SUMMARY ===`);
+      logger.warn(`Total failed: ${failedCandidates.length}`);
+      for (const failed of failedCandidates) {
+        logger.warn(`  - ${failed.name} (${failed.email}) [Row ${failed.rowIndex}]: ${failed.reason}`);
+      }
+    }
+
+    return { failed: failedCandidates, advertResults };
+  }
+
   // --- Phase 1: candidates with adref_no — search directly by adref ---
 
-  const withAdref = candidates.filter(c => c.adrefNo.trim().length > 0);
-  const fallbackCandidates: CandidateRow[] = candidates.filter(c => c.adrefNo.trim().length === 0);
+  const withAdref = processable.filter(c => c.adrefNo.trim().length > 0);
+  const fallbackCandidates: CandidateRow[] = processable.filter(c => c.adrefNo.trim().length === 0);
 
   if (fallbackCandidates.length > 0) {
     logger.info(`${fallbackCandidates.length} candidate(s) have no adref_no — will fall back to 30-day advert iteration`);
@@ -139,6 +226,18 @@ export async function processAllCandidatesByAdvert(
   }
 
   // --- Phase 2: fallback — iterate all adverts from last 30 days ---
+
+  if (phase === 'phase1Only') {
+    logger.info('Phase 1 only — skipping Phase 2 fallback. Unmatched candidates will be picked up in Stage 2.');
+    if (failedCandidates.length > 0) {
+      logger.warn(`\n=== FAILED CANDIDATES SUMMARY ===`);
+      logger.warn(`Total failed: ${failedCandidates.length}`);
+      for (const failed of failedCandidates) {
+        logger.warn(`  - ${failed.name} (${failed.email}) [Row ${failed.rowIndex}]: ${failed.reason}`);
+      }
+    }
+    return { failed: failedCandidates, advertResults };
+  }
 
   if (fallbackCandidates.length > 0 && !shouldStop()) {
     logger.info(`Starting 30-day advert iteration for ${fallbackCandidates.length} candidate(s)`);
