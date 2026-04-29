@@ -131,21 +131,24 @@ export async function markRowAsProcessed(rowIndex: number): Promise<void> {
   logger.info(`Row ${rowIndex} marked as processed`);
 }
 
-export async function markRowAsSkipped(rowIndex: number): Promise<void> {
-  logger.info(`Marking row ${rowIndex} as skipped...`);
+export async function markRowsAsSkipped(rowIndexes: number[]): Promise<void> {
+  if (rowIndexes.length === 0) return;
+  logger.info(`Marking ${rowIndexes.length} row(s) as skipped in one batch...`);
 
   const { sheets, sheetId } = await getAuthenticatedSheets();
 
-  await sheets.spreadsheets.values.update({
+  await sheets.spreadsheets.values.batchUpdate({
     spreadsheetId: sheetId,
-    range: `Sheet1!M${rowIndex}`,
-    valueInputOption: "RAW",
     requestBody: {
-      values: [["SKIPPED"]],
+      valueInputOption: "RAW",
+      data: rowIndexes.map(rowIndex => ({
+        range: `Sheet1!M${rowIndex}`,
+        values: [["SKIPPED"]],
+      })),
     },
   });
 
-  logger.info(`Row ${rowIndex} marked as skipped`);
+  logger.info(`Marked rows ${rowIndexes.join(", ")} as skipped`);
 }
 
 export async function incrementRowAttempt(rowIndex: number, currentAttempts: string): Promise<void> {

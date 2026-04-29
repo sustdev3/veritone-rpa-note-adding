@@ -10,7 +10,7 @@ import { openResponsesTab, findAndProcessCandidate } from "../automation/respons
 import {
   CandidateRow,
   markRowAsProcessed,
-  markRowAsSkipped,
+  markRowsAsSkipped,
   incrementRowAttempt,
 } from "../services/sheets";
 import { randomDelay } from "../utils/shared/shared";
@@ -89,9 +89,11 @@ export async function processAllCandidatesByAdvert(
   const skippable = candidates.filter(c => c.adrefNo.trim() === '' && c.advertHint.trim() === '');
   const processable = candidates.filter(c => c.adrefNo.trim() !== '' || c.advertHint.trim() !== '');
 
-  for (const candidate of skippable) {
-    logger.warn(`Skipping ${candidate.candidateName} (row ${candidate.rowIndex}) — no adrefNo or advertHint`);
-    await markRowAsSkipped(candidate.rowIndex);
+  if (skippable.length > 0) {
+    for (const candidate of skippable) {
+      logger.warn(`Skipping ${candidate.candidateName} (row ${candidate.rowIndex}) — no adrefNo or advertHint`);
+    }
+    await markRowsAsSkipped(skippable.map(c => c.rowIndex));
   }
 
   if (phase === 'phase2Only') {
