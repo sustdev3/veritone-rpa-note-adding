@@ -54,9 +54,13 @@ function parseSheetTimestamp(ts: string): Date | null {
   return isNaN(d.getTime()) ? null : d;
 }
 
-export async function getUnprocessedRows(since?: Date): Promise<CandidateRow[]> {
-  if (since) {
+export async function getUnprocessedRows(since?: Date, before?: Date): Promise<CandidateRow[]> {
+  if (since && before) {
+    logger.info(`Fetching unprocessed rows from ${since.toISOString()} to ${before.toISOString()} from Google Sheets...`);
+  } else if (since) {
     logger.info(`Fetching unprocessed rows since ${since.toISOString()} from Google Sheets...`);
+  } else if (before) {
+    logger.info(`Fetching unprocessed rows before ${before.toISOString()} from Google Sheets...`);
   } else {
     logger.info("Fetching unprocessed rows from Google Sheets...");
   }
@@ -85,11 +89,10 @@ export async function getUnprocessedRows(since?: Date): Promise<CandidateRow[]> 
       continue;
     }
 
-    if (since) {
+    if (since || before) {
       const submittedAt = parseSheetTimestamp(row[0] || "");
-      if (submittedAt && submittedAt < since) {
-        continue;
-      }
+      if (since && submittedAt && submittedAt < since) continue;
+      if (before && submittedAt && submittedAt >= before) continue;
     }
 
     unprocessedRows.push({

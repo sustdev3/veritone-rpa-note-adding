@@ -209,8 +209,10 @@ async function runDay(): Promise<void> {
           return past;
         };
 
-        // No `since` filter — Stage 2 processes the full unprocessed backlog
-        const stage2Results = await runBatch(stage2Session, stage2ShouldStop, 'phase2Only');
+        // Stage 2 processes the full unprocessed backlog up to (but not including) today —
+        // same-day candidates are handled by Stage 1 and will fall to tomorrow's Stage 2 if unmatched
+        const startOfToday = nowAest().startOf('day').toJSDate();
+        const stage2Results = await runBatch(stage2Session, stage2ShouldStop, 'phase2Only', undefined, startOfToday);
         if (stage2Results) allAdvertResults.push(...stage2Results);
 
         logger.info(`[Scheduler] Stage 2 complete at ${nowAest().toFormat("HH:mm:ss")} AEST`);

@@ -38,6 +38,7 @@ export async function runBatch(
   shouldStop: () => boolean = () => false,
   phase: ProcessingPhase = 'both',
   since?: Date,
+  before?: Date,
 ): Promise<AdvertRunResult[] | null> {
   if (session.page.url().includes("login.cgi")) {
     logger.warn("[Session] Session expired during idle — re-logging in...");
@@ -45,7 +46,7 @@ export async function runBatch(
     logger.info("[Session] Re-login successful.");
   }
 
-  const candidates = await getUnprocessedRows(since);
+  const candidates = await getUnprocessedRows(since, before);
 
   if (candidates.length === 0) {
     logger.info("No unprocessed candidates found in the sheet.");
