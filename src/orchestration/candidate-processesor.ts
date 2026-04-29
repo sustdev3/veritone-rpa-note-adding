@@ -22,6 +22,10 @@ interface FailedCandidate {
   reason: string;
 }
 
+function advertMatchesHint(advertTitle: string, advertHint: string): boolean {
+  return advertHint.trim() === '' || advertTitle.toLowerCase().includes(advertHint.trim().toLowerCase());
+}
+
 export type ProcessingPhase = 'phase1Only' | 'phase2Only' | 'both';
 
 export interface AdvertRunResult {
@@ -120,13 +124,21 @@ export async function processAllCandidatesByAdvert(
 
       if (remainingCandidates.length === 0) break;
 
+      const candidatesForThisAdvert = remainingCandidates.filter(c => advertMatchesHint(advert.jobTitle, c.advertHint));
+      const skippedForThisAdvert = remainingCandidates.filter(c => !advertMatchesHint(advert.jobTitle, c.advertHint));
+
+      if (candidatesForThisAdvert.length === 0) {
+        logger.info(`Skipping advert "${advert.jobTitle}" — no candidates with matching hint`);
+        continue;
+      }
+
       await navigateToManageAdverts(page);
       logger.info(`Opening advert "${advert.jobTitle}" (ID: ${advert.advertId})`);
       await navigateToAdvertById(page, advert.advertId, advert.pageNumber);
 
       const { notFound: stillNotFound, processedCount } = await processGroupInAdvert(
         page,
-        remainingCandidates,
+        candidatesForThisAdvert,
         `advert "${advert.jobTitle}"`,
         shouldStop,
       );
@@ -135,7 +147,7 @@ export async function processAllCandidatesByAdvert(
         advertResults.push({ adrefNo: advert.advertId, advertTitle: advert.jobTitle, candidatesProcessed: processedCount, datePosted: advert.datePosted.toISOString().substring(0, 10) });
       }
 
-      remainingCandidates = stillNotFound;
+      remainingCandidates = [...stillNotFound, ...skippedForThisAdvert];
 
       if (shouldStop()) {
         outerStopped = true;
@@ -260,13 +272,21 @@ export async function processAllCandidatesByAdvert(
 
       if (remainingCandidates.length === 0) break;
 
+      const candidatesForThisAdvert = remainingCandidates.filter(c => advertMatchesHint(advert.jobTitle, c.advertHint));
+      const skippedForThisAdvert = remainingCandidates.filter(c => !advertMatchesHint(advert.jobTitle, c.advertHint));
+
+      if (candidatesForThisAdvert.length === 0) {
+        logger.info(`Skipping advert "${advert.jobTitle}" — no candidates with matching hint`);
+        continue;
+      }
+
       await navigateToManageAdverts(page);
       logger.info(`Opening advert "${advert.jobTitle}" (ID: ${advert.advertId})`);
       await navigateToAdvertById(page, advert.advertId, advert.pageNumber);
 
       const { notFound: stillNotFound, processedCount } = await processGroupInAdvert(
         page,
-        remainingCandidates,
+        candidatesForThisAdvert,
         `advert "${advert.jobTitle}"`,
         shouldStop,
       );
@@ -276,7 +296,7 @@ export async function processAllCandidatesByAdvert(
         advertResults.push({ adrefNo: advert.advertId, advertTitle: advert.jobTitle, candidatesProcessed: processedCount, datePosted: advert.datePosted.toISOString().substring(0, 10) });
       }
 
-      remainingCandidates = stillNotFound;
+      remainingCandidates = [...stillNotFound, ...skippedForThisAdvert];
 
       if (shouldStop()) {
         outerStopped = true;
