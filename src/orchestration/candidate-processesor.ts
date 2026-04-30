@@ -41,6 +41,7 @@ async function processGroupInAdvert(
   group: CandidateRow[],
   advertLabel: string,
   shouldStop: () => boolean,
+  processedValue = "TRUE",
 ): Promise<{ notFound: CandidateRow[]; processedCount: number }> {
   // Returns candidates that were NOT found in this advert (for fallback iteration)
   const notFound: CandidateRow[] = [];
@@ -62,8 +63,8 @@ async function processGroupInAdvert(
 
       if (found) {
         logger.info(`✓ Processed ${candidate.candidateName} in ${advertLabel}.`);
-        await markRowAsProcessed(candidate.rowIndex);
-        logger.info(`Marked row ${candidate.rowIndex} as processed.`);
+        await markRowAsProcessed(candidate.rowIndex, processedValue);
+        logger.info(`Marked row ${candidate.rowIndex} as processed (${processedValue}).`);
         processedCount++;
       } else {
         logger.warn(`✗ ${candidate.candidateName} not found in ${advertLabel}.`);
@@ -81,58 +82,6 @@ async function processGroupInAdvert(
   return { notFound, processedCount };
 }
 
-async function tryFindCandidateByAdref(
-  page: Page,
-  candidate: CandidateRow,
-  shouldStop: () => boolean,
-): Promise<{ found: boolean; advertId?: string; jobTitle?: string; datePosted?: string }> {
-  await navigateToManageAdverts(page);
-  const adverts = await searchAdvertsByAdrefNo(page, candidate.adrefNo);
-
-  if (adverts.length === 0) {
-    logger.warn(`No adverts found for adref_no "${candidate.adrefNo}" — ${candidate.candidateName} cannot be processed via adrefNo`);
-    return { found: false };
-  }
-
-  const lookbackDays = parseInt(process.env.LOOKBACK_DAYS ?? "30", 10);
-  const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - lookbackDays);
-
-  for (const advert of adverts) {
-    if (shouldStop()) {
-      logger.info(`[Scheduler] Stop signal received while trying advert "${advert.jobTitle}" for ${candidate.candidateName}`);
-      return { found: false };
-    }
-
-    logger.info(`[Phase 2a] Trying advert "${advert.jobTitle}" (ID: ${advert.advertId}) for ${candidate.candidateName}`);
-
-    await navigateToManageAdverts(page);
-    await page.locator("input#searchbar_keywords").clear();
-    await page.locator("input#searchbar_keywords").pressSequentially(candidate.adrefNo, { delay: 80 });
-    await page.click("button.searchsubmit");
-    await page.waitForSelector("table.managevacancies");
-    await page.click(`a.jobtitle.no_dragdrop[href*="advert_id=${advert.advertId}"]`);
-    await page.waitForLoadState("networkidle", { timeout: 15000 });
-    await randomDelay();
-
-    await openResponsesTab(page);
-    const found = await findAndProcessCandidate(page, candidate.candidateEmail, candidate);
-
-    if (found) {
-      const isOutside = new Date(advert.datePosted) < cutoff;
-      const processedValue = isOutside ? "OUTSIDE WINDOW" : "TRUE";
-      await markRowAsProcessed(candidate.rowIndex, processedValue);
-      if (isOutside) {
-        logger.info(`[Phase 2a] ${candidate.candidateName} found in advert outside lookback window — marked "OUTSIDE WINDOW"`);
-      }
-      return { found: true, advertId: advert.advertId, jobTitle: advert.jobTitle, datePosted: advert.datePosted };
-    }
-
-    await randomDelay();
-  }
-
-  return { found: false };
-}
 
 export async function processAllCandidatesByAdvert(
   page: Page,
@@ -164,41 +113,90 @@ export async function processAllCandidatesByAdvert(
 
     logger.info(`Phase 2 — ${byAdref.length} candidate(s) with adrefNo (targeted search), ${byHint.length} without (hint-based fallback)`);
 
-    // --- Phase 2a: targeted adrefNo search, no date restriction ---
+    // --- Phase 2a: group by adrefNo, search once per group, try each advert ---
     const adrefResultsMap = new Map<string, AdvertRunResult>();
+    const lookbackDays = parseInt(process.env.LOOKBACK_DAYS ?? "30", 10);
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - lookbackDays);
 
+    const groupedByAdref = new Map<string, CandidateRow[]>();
     for (const candidate of byAdref) {
+      const group = groupedByAdref.get(candidate.adrefNo) ?? [];
+      group.push(candidate);
+      groupedByAdref.set(candidate.adrefNo, group);
+    }
+
+    logger.info(`[Phase 2a] ${groupedByAdref.size} unique adrefNo group(s)`);
+
+    for (const [adrefNo, group] of groupedByAdref) {
       if (shouldStop()) {
-        logger.info(`[Scheduler] Stop signal received in Phase 2a. Deferring ${candidate.candidateName} and remaining.`);
+        logger.info(`[Scheduler] Stop signal received in Phase 2a. Deferring adrefNo "${adrefNo}" and remaining.`);
         break;
       }
 
-      try {
-        const result = await tryFindCandidateByAdref(page, candidate, shouldStop);
+      logger.info(`[Phase 2a] adrefNo "${adrefNo}" — ${group.length} candidate(s)`);
 
-        if (result.found) {
-          logger.info(`✓ [Phase 2a] Processed ${candidate.candidateName} in "${result.jobTitle}"`);
-          const existing = adrefResultsMap.get(result.advertId!);
-          if (existing) {
-            existing.candidatesProcessed++;
-          } else {
-            adrefResultsMap.set(result.advertId!, {
-              adrefNo: candidate.adrefNo,
-              advertTitle: result.jobTitle!,
-              candidatesProcessed: 1,
-              datePosted: result.datePosted,
-            });
-          }
-        } else {
-          logger.warn(`✗ [Phase 2a] ${candidate.candidateName} not found via adrefNo — adding to hint fallback`);
-          byHint.push(candidate);
-        }
-      } catch (error) {
-        logger.error(`[Phase 2a] Error processing ${candidate.candidateName}: ${(error as Error).message}`);
-        byHint.push(candidate);
+      await navigateToManageAdverts(page);
+      const adverts = await searchAdvertsByAdrefNo(page, adrefNo);
+
+      if (adverts.length === 0) {
+        logger.warn(`[Phase 2a] No adverts found for adrefNo "${adrefNo}" — ${group.length} candidate(s) falling back to hint search`);
+        byHint.push(...group);
+        continue;
       }
 
-      await randomDelay();
+      let remainingInGroup = [...group];
+
+      for (const advert of adverts) {
+        if (shouldStop() || remainingInGroup.length === 0) break;
+
+        logger.info(`[Phase 2a] Trying advert "${advert.jobTitle}" (ID: ${advert.advertId}) for ${remainingInGroup.length} candidate(s)`);
+
+        await navigateToManageAdverts(page);
+        await page.locator("input#searchbar_keywords").clear();
+        await page.locator("input#searchbar_keywords").pressSequentially(adrefNo, { delay: 80 });
+        await page.click("button.searchsubmit");
+        await page.waitForSelector("table.managevacancies");
+        await page.click(`a.jobtitle.no_dragdrop[href*="advert_id=${advert.advertId}"]`);
+        await page.waitForLoadState("networkidle", { timeout: 15000 });
+        await randomDelay();
+
+        const isOutside = new Date(advert.datePosted) < cutoff;
+        const processedValue = isOutside ? "OUTSIDE WINDOW" : "TRUE";
+
+        const { notFound, processedCount } = await processGroupInAdvert(
+          page,
+          remainingInGroup,
+          `advert "${advert.jobTitle}"`,
+          shouldStop,
+          processedValue,
+        );
+
+        if (processedCount > 0) {
+          const existing = adrefResultsMap.get(advert.advertId);
+          if (existing) {
+            existing.candidatesProcessed += processedCount;
+          } else {
+            adrefResultsMap.set(advert.advertId, {
+              adrefNo,
+              advertTitle: advert.jobTitle,
+              candidatesProcessed: processedCount,
+              datePosted: advert.datePosted,
+            });
+          }
+          if (isOutside) {
+            logger.info(`[Phase 2a] ${processedCount} candidate(s) found outside lookback window — marked "OUTSIDE WINDOW"`);
+          }
+        }
+
+        remainingInGroup = notFound;
+        await randomDelay();
+      }
+
+      if (remainingInGroup.length > 0) {
+        logger.warn(`[Phase 2a] ${remainingInGroup.length} candidate(s) not found in any advert for adrefNo "${adrefNo}" — falling back to hint search`);
+        byHint.push(...remainingInGroup);
+      }
     }
 
     for (const result of adrefResultsMap.values()) {
