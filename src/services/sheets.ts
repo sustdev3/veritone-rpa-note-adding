@@ -85,7 +85,7 @@ export async function getUnprocessedRows(since?: Date, before?: Date): Promise<C
     }
 
     const processedStatus = (row[12] || "").toUpperCase();
-    if (processedStatus === "TRUE" || processedStatus === "ERROR" || processedStatus === "SKIPPED") {
+    if (processedStatus === "TRUE" || processedStatus === "ERROR" || processedStatus === "SKIPPED" || processedStatus === "OUTSIDE WINDOW") {
       continue;
     }
 
@@ -117,8 +117,8 @@ export async function getUnprocessedRows(since?: Date, before?: Date): Promise<C
   return unprocessedRows;
 }
 
-export async function markRowAsProcessed(rowIndex: number): Promise<void> {
-  logger.info(`Marking row ${rowIndex} as processed...`);
+export async function markRowAsProcessed(rowIndex: number, value = "TRUE"): Promise<void> {
+  logger.info(`Marking row ${rowIndex} as processed (${value})...`);
 
   const { sheets, sheetId } = await getAuthenticatedSheets();
 
@@ -127,11 +127,11 @@ export async function markRowAsProcessed(rowIndex: number): Promise<void> {
     range: `Sheet1!M${rowIndex}`,
     valueInputOption: "RAW",
     requestBody: {
-      values: [["TRUE"]],
+      values: [[value]],
     },
   });
 
-  logger.info(`Row ${rowIndex} marked as processed`);
+  logger.info(`Row ${rowIndex} marked as processed (${value})`);
 }
 
 export async function markRowsAsSkipped(rowIndexes: number[]): Promise<void> {

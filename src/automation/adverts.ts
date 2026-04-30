@@ -129,6 +129,58 @@ export async function navigateToAdvertById(page: Page, advertId: string, pageNum
   await randomDelay();
 }
 
+// Searches by adref_no and returns ALL matching adverts across all dates (no lookback restriction).
+// Leaves the manage adverts page in its default (unfiltered) state after returning.
+// Sorted most recent first.
+export async function searchAdvertsByAdrefNo(
+  page: Page,
+  adrefNo: string,
+): Promise<Array<{ advertId: string; jobTitle: string; datePosted: string }>> {
+  logger.info(`Searching all adverts for adref_no: "${adrefNo}" (no date restriction)`);
+
+  await page.locator("input#searchbar_keywords").clear();
+  await page.locator("input#searchbar_keywords").pressSequentially(adrefNo, { delay: 80 });
+  await page.click("button.searchsubmit");
+  await page.waitForSelector("table.managevacancies");
+  await randomDelay();
+
+  const rawResults = await page.evaluate(() => {
+    return Array.from(document.querySelectorAll("tr.va-top.advert.last")).map(row => {
+      const titleLink = row.querySelector("a.jobtitle.no_dragdrop");
+      const href = titleLink?.getAttribute("href") ?? "";
+      const advertIdMatch = href.match(/advert_id=(\d+)/);
+      const tds = row.querySelectorAll("td");
+      const rawDate = tds[1]?.textContent?.trim().replace(/\s+/g, " ") ?? "";
+      return {
+        advertId: advertIdMatch?.[1] ?? null,
+        jobTitle: titleLink?.textContent?.trim() ?? "",
+        rawDate,
+      };
+    });
+  });
+
+  // Restore full unfiltered list
+  await page.locator("input#searchbar_keywords").clear();
+  await page.click("button.searchsubmit");
+  await page.waitForSelector("table.managevacancies");
+  await randomDelay();
+
+  const results: Array<{ advertId: string; jobTitle: string; datePosted: string }> = [];
+  for (const r of rawResults) {
+    if (!r.advertId) continue;
+    const date = parseAdvertDate(r.rawDate);
+    if (!date) {
+      logger.warn(`Could not parse date "${r.rawDate}" for advert "${r.jobTitle}" — excluding`);
+      continue;
+    }
+    results.push({ advertId: r.advertId, jobTitle: r.jobTitle, datePosted: date.toISOString().substring(0, 10) });
+  }
+
+  results.sort((a, b) => b.datePosted.localeCompare(a.datePosted));
+  logger.info(`adref_no "${adrefNo}": ${results.length} advert(s) found across all dates`);
+  return results;
+}
+
 // Searches by adref_no, filters results to the lookback window, then uses advertHint
 // to pick the correct advert among those. Navigates to the matched advert.
 // Returns the chosen advert's { advertId, jobTitle } if found, or null if none pass the filters.

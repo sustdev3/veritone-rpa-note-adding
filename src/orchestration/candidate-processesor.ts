@@ -5,6 +5,7 @@ import {
   readRecentAdverts,
   navigateToAdvertById,
   searchAndNavigateToAdvert,
+  searchAdvertsByAdrefNo,
 } from "../automation/adverts";
 import { openResponsesTab, findAndProcessCandidate } from "../automation/responses";
 import {
@@ -80,6 +81,59 @@ async function processGroupInAdvert(
   return { notFound, processedCount };
 }
 
+async function tryFindCandidateByAdref(
+  page: Page,
+  candidate: CandidateRow,
+  shouldStop: () => boolean,
+): Promise<{ found: boolean; advertId?: string; jobTitle?: string; datePosted?: string }> {
+  await navigateToManageAdverts(page);
+  const adverts = await searchAdvertsByAdrefNo(page, candidate.adrefNo);
+
+  if (adverts.length === 0) {
+    logger.warn(`No adverts found for adref_no "${candidate.adrefNo}" — ${candidate.candidateName} cannot be processed via adrefNo`);
+    return { found: false };
+  }
+
+  const lookbackDays = parseInt(process.env.LOOKBACK_DAYS ?? "30", 10);
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - lookbackDays);
+
+  for (const advert of adverts) {
+    if (shouldStop()) {
+      logger.info(`[Scheduler] Stop signal received while trying advert "${advert.jobTitle}" for ${candidate.candidateName}`);
+      return { found: false };
+    }
+
+    logger.info(`[Phase 2a] Trying advert "${advert.jobTitle}" (ID: ${advert.advertId}) for ${candidate.candidateName}`);
+
+    await navigateToManageAdverts(page);
+    await page.locator("input#searchbar_keywords").clear();
+    await page.locator("input#searchbar_keywords").pressSequentially(candidate.adrefNo, { delay: 80 });
+    await page.click("button.searchsubmit");
+    await page.waitForSelector("table.managevacancies");
+    await page.click(`a.jobtitle.no_dragdrop[href*="advert_id=${advert.advertId}"]`);
+    await page.waitForLoadState("networkidle", { timeout: 15000 });
+    await randomDelay();
+
+    await openResponsesTab(page);
+    const found = await findAndProcessCandidate(page, candidate.candidateEmail, candidate);
+
+    if (found) {
+      const isOutside = new Date(advert.datePosted) < cutoff;
+      const processedValue = isOutside ? "OUTSIDE WINDOW" : "TRUE";
+      await markRowAsProcessed(candidate.rowIndex, processedValue);
+      if (isOutside) {
+        logger.info(`[Phase 2a] ${candidate.candidateName} found in advert outside lookback window — marked "OUTSIDE WINDOW"`);
+      }
+      return { found: true, advertId: advert.advertId, jobTitle: advert.jobTitle, datePosted: advert.datePosted };
+    }
+
+    await randomDelay();
+  }
+
+  return { found: false };
+}
+
 export async function processAllCandidatesByAdvert(
   page: Page,
   candidates: CandidateRow[],
@@ -101,73 +155,121 @@ export async function processAllCandidatesByAdvert(
   }
 
   if (phase === 'phase2Only') {
-    logger.info(`Phase 2 only — treating all ${processable.length} candidate(s) as fallback`);
-    const fallbackCandidates: CandidateRow[] = [...processable];
-
-    if (fallbackCandidates.length === 0) {
+    if (processable.length === 0) {
       return { failed: failedCandidates, advertResults };
     }
 
-    await navigateToManageAdverts(page);
-    const allAdverts = await readRecentAdverts(page, 30);
-    logger.info(`Found ${allAdverts.length} adverts in last 30 days`);
+    const byAdref = processable.filter(c => c.adrefNo.trim() !== '');
+    const byHint: CandidateRow[] = processable.filter(c => c.adrefNo.trim() === '');
 
-    let remainingCandidates = [...fallbackCandidates];
-    let outerStopped = false;
+    logger.info(`Phase 2 — ${byAdref.length} candidate(s) with adrefNo (targeted search), ${byHint.length} without (hint-based fallback)`);
 
-    for (const advert of allAdverts) {
+    // --- Phase 2a: targeted adrefNo search, no date restriction ---
+    const adrefResultsMap = new Map<string, AdvertRunResult>();
+
+    for (const candidate of byAdref) {
       if (shouldStop()) {
-        logger.info(`[Scheduler] Stop signal received before advert "${advert.jobTitle}". Deferring remaining.`);
-        outerStopped = true;
+        logger.info(`[Scheduler] Stop signal received in Phase 2a. Deferring ${candidate.candidateName} and remaining.`);
         break;
       }
 
-      if (remainingCandidates.length === 0) break;
+      try {
+        const result = await tryFindCandidateByAdref(page, candidate, shouldStop);
 
-      const candidatesForThisAdvert = remainingCandidates.filter(c => advertMatchesHint(advert.jobTitle, c.advertHint));
-      const skippedForThisAdvert = remainingCandidates.filter(c => !advertMatchesHint(advert.jobTitle, c.advertHint));
-
-      if (candidatesForThisAdvert.length === 0) {
-        logger.info(`Skipping advert "${advert.jobTitle}" — no candidates with matching hint`);
-        continue;
-      }
-
-      await navigateToManageAdverts(page);
-      logger.info(`Opening advert "${advert.jobTitle}" (ID: ${advert.advertId})`);
-      await navigateToAdvertById(page, advert.advertId, advert.pageNumber);
-
-      const { notFound: stillNotFound, processedCount } = await processGroupInAdvert(
-        page,
-        candidatesForThisAdvert,
-        `advert "${advert.jobTitle}"`,
-        shouldStop,
-      );
-
-      if (processedCount > 0) {
-        advertResults.push({ adrefNo: advert.advertId, advertTitle: advert.jobTitle, candidatesProcessed: processedCount, datePosted: advert.datePosted.toISOString().substring(0, 10) });
-      }
-
-      remainingCandidates = [...stillNotFound, ...skippedForThisAdvert];
-
-      if (shouldStop()) {
-        outerStopped = true;
-        break;
+        if (result.found) {
+          logger.info(`✓ [Phase 2a] Processed ${candidate.candidateName} in "${result.jobTitle}"`);
+          const existing = adrefResultsMap.get(result.advertId!);
+          if (existing) {
+            existing.candidatesProcessed++;
+          } else {
+            adrefResultsMap.set(result.advertId!, {
+              adrefNo: candidate.adrefNo,
+              advertTitle: result.jobTitle!,
+              candidatesProcessed: 1,
+              datePosted: result.datePosted,
+            });
+          }
+        } else {
+          logger.warn(`✗ [Phase 2a] ${candidate.candidateName} not found via adrefNo — adding to hint fallback`);
+          byHint.push(candidate);
+        }
+      } catch (error) {
+        logger.error(`[Phase 2a] Error processing ${candidate.candidateName}: ${(error as Error).message}`);
+        byHint.push(candidate);
       }
 
       await randomDelay();
     }
 
-    if (remainingCandidates.length > 0 && !outerStopped) {
-      logger.warn(`${remainingCandidates.length} candidate(s) not found in any advert after full iteration:`);
-      for (const candidate of remainingCandidates) {
-        logger.warn(`  - ${candidate.candidateName} (${candidate.candidateEmail}) [Row ${candidate.rowIndex}]`);
-        await incrementRowAttempt(candidate.rowIndex, candidate.processed);
-        failedCandidates.push({
-          name: candidate.candidateName,
-          email: candidate.candidateEmail,
-          rowIndex: candidate.rowIndex,
-          reason: "Not found in any advert after full 30-day iteration",
-        });
+    for (const result of adrefResultsMap.values()) {
+      advertResults.push(result);
+    }
+
+    // --- Phase 2b: hint-based fallback for candidates without adrefNo ---
+    if (byHint.length > 0 && !shouldStop()) {
+      logger.info(`[Phase 2b] Hint-based iteration for ${byHint.length} candidate(s)`);
+
+      await navigateToManageAdverts(page);
+      const allAdverts = await readRecentAdverts(page, 30);
+      logger.info(`Found ${allAdverts.length} adverts in last 30 days`);
+
+      let remainingCandidates = [...byHint];
+      let outerStopped = false;
+
+      for (const advert of allAdverts) {
+        if (shouldStop()) {
+          logger.info(`[Scheduler] Stop signal received before advert "${advert.jobTitle}". Deferring remaining.`);
+          outerStopped = true;
+          break;
+        }
+
+        if (remainingCandidates.length === 0) break;
+
+        const candidatesForThisAdvert = remainingCandidates.filter(c => advertMatchesHint(advert.jobTitle, c.advertHint));
+        const skippedForThisAdvert = remainingCandidates.filter(c => !advertMatchesHint(advert.jobTitle, c.advertHint));
+
+        if (candidatesForThisAdvert.length === 0) {
+          logger.info(`Skipping advert "${advert.jobTitle}" — no candidates with matching hint`);
+          continue;
+        }
+
+        await navigateToManageAdverts(page);
+        logger.info(`[Phase 2b] Opening advert "${advert.jobTitle}" (ID: ${advert.advertId})`);
+        await navigateToAdvertById(page, advert.advertId, advert.pageNumber);
+
+        const { notFound: stillNotFound, processedCount } = await processGroupInAdvert(
+          page,
+          candidatesForThisAdvert,
+          `advert "${advert.jobTitle}"`,
+          shouldStop,
+        );
+
+        if (processedCount > 0) {
+          advertResults.push({ adrefNo: advert.advertId, advertTitle: advert.jobTitle, candidatesProcessed: processedCount, datePosted: advert.datePosted.toISOString().substring(0, 10) });
+        }
+
+        remainingCandidates = [...stillNotFound, ...skippedForThisAdvert];
+
+        if (shouldStop()) {
+          outerStopped = true;
+          break;
+        }
+
+        await randomDelay();
+      }
+
+      if (remainingCandidates.length > 0 && !outerStopped) {
+        logger.warn(`${remainingCandidates.length} candidate(s) not found after full Phase 2 iteration:`);
+        for (const candidate of remainingCandidates) {
+          logger.warn(`  - ${candidate.candidateName} (${candidate.candidateEmail}) [Row ${candidate.rowIndex}]`);
+          await incrementRowAttempt(candidate.rowIndex, candidate.processed);
+          failedCandidates.push({
+            name: candidate.candidateName,
+            email: candidate.candidateEmail,
+            rowIndex: candidate.rowIndex,
+            reason: "Not found in any advert after Phase 2 full iteration",
+          });
+        }
       }
     }
 
