@@ -173,6 +173,16 @@ export async function incrementRowAttempt(rowIndex: number, currentAttempts: str
   logger.info(`Row ${rowIndex} attempt updated to: ${newValue}`);
 }
 
+export async function writeAdvertIdToRow(rowIndex: number, advertId: string): Promise<void> {
+  const { sheets, sheetId } = await getAuthenticatedSheets();
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: sheetId,
+    range: `Sheet1!N${rowIndex}`,
+    valueInputOption: "RAW",
+    requestBody: { values: [[advertId]] },
+  });
+}
+
 export async function markRowAsError(rowIndex: number): Promise<void> {
   logger.info(`Marking row ${rowIndex} as error...`);
 
@@ -211,22 +221,32 @@ export async function mergeAnsweredSummary(
     adrefToTitles.set(advert.refNumber, titles);
   }
 
-  // Count ALL form respondents from Sheet1 using hint matching.
+  // Count ALL form respondents from Sheet1.
+  // Primary: rows with advertId in col N (exact match — written at note-add time).
+  // Fallback: rows without col N use adrefNo + hint disambiguation (historical rows).
   const sheet1Response = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: "Sheet1!A:E",
+    range: "Sheet1!A:N",
   });
 
-  const respondentCounts = new Map<string, number>();
+  const advertIdCounts = new Map<string, number>();
+  const adrefNoCounts = new Map<string, number>();
 
   for (const row of (sheet1Response.data.values || []).slice(1)) {
+    const advertId = (row[13] || "").trim();
+
+    if (advertId) {
+      advertIdCounts.set(advertId, (advertIdCounts.get(advertId) ?? 0) + 1);
+      continue;
+    }
+
     const adrefNo = (row[3] || "").trim();
     const advertHint = (row[4] || "").trim().toLowerCase();
     if (!adrefNo) continue;
 
     const titles = adrefToTitles.get(adrefNo);
     if (!titles || titles.size <= 1) {
-      respondentCounts.set(adrefNo, (respondentCounts.get(adrefNo) ?? 0) + 1);
+      adrefNoCounts.set(adrefNo, (adrefNoCounts.get(adrefNo) ?? 0) + 1);
     } else {
       const titlesArr = Array.from(titles);
       const matched = (() => {
@@ -237,27 +257,28 @@ export async function mergeAnsweredSummary(
         return hintMatches.find((t) => t.toLowerCase().startsWith(advertHint)) ?? hintMatches[0];
       })();
       const key = `${adrefNo}|${matched}`;
-      respondentCounts.set(key, (respondentCounts.get(key) ?? 0) + 1);
+      adrefNoCounts.set(key, (adrefNoCounts.get(key) ?? 0) + 1);
     }
   }
 
-  const getCount = (adrefNo: string, jobTitle: string): number => {
+  const getCount = (advertId: string, adrefNo: string, jobTitle: string): number => {
+    if (advertId && advertIdCounts.has(advertId)) return advertIdCounts.get(advertId)!;
     if (!adrefNo) return 0;
     const titles = adrefToTitles.get(adrefNo);
-    if (!titles || titles.size <= 1) return respondentCounts.get(adrefNo) ?? 0;
-    return respondentCounts.get(`${adrefNo}|${jobTitle}`) ?? 0;
+    if (!titles || titles.size <= 1) return adrefNoCounts.get(adrefNo) ?? 0;
+    return adrefNoCounts.get(`${adrefNo}|${jobTitle}`) ?? 0;
   };
 
   // Deduplicate advert list by refNumber|jobTitle (same job may appear as multiple advertIds).
   // For duplicates keep the most recent datePosted.
-  const summaryMap = new Map<string, { adrefNo: string; jobTitle: string; datePosted: string }>();
+  const summaryMap = new Map<string, { advertId: string; adrefNo: string; jobTitle: string; datePosted: string }>();
   for (const advert of advertList) {
     const adrefNo = advert.refNumber || advert.advertId;
     const key = `${adrefNo}|${advert.jobTitle}`;
     const dateStr = advert.datePosted.toISOString().substring(0, 10);
     const existing = summaryMap.get(key);
     if (!existing || dateStr > existing.datePosted) {
-      summaryMap.set(key, { adrefNo, jobTitle: advert.jobTitle, datePosted: dateStr });
+      summaryMap.set(key, { advertId: advert.advertId, adrefNo, jobTitle: advert.jobTitle, datePosted: dateStr });
     }
   }
 
@@ -271,13 +292,14 @@ export async function mergeAnsweredSummary(
     e.adrefNo,
     e.jobTitle,
     e.datePosted,
-    getCount(e.adrefNo, e.jobTitle),
+    getCount(e.advertId, e.adrefNo, e.jobTitle),
     updatedAt,
+    e.advertId,
   ]);
 
   await sheets.spreadsheets.values.clear({
     spreadsheetId: sheetId,
-    range: "Summary!A2:E",
+    range: "Summary!A2:F",
   });
 
   if (rows.length > 0) {

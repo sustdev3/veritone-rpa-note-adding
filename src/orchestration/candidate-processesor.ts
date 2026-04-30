@@ -13,6 +13,7 @@ import {
   markRowAsProcessed,
   markRowsAsSkipped,
   incrementRowAttempt,
+  writeAdvertIdToRow,
 } from "../services/sheets";
 import { randomDelay } from "../utils/shared/shared";
 
@@ -42,6 +43,7 @@ async function processGroupInAdvert(
   advertLabel: string,
   shouldStop: () => boolean,
   processedValue = "TRUE",
+  advertId = "",
 ): Promise<{ notFound: CandidateRow[]; processedCount: number }> {
   // Returns candidates that were NOT found in this advert (for fallback iteration)
   const notFound: CandidateRow[] = [];
@@ -64,6 +66,7 @@ async function processGroupInAdvert(
       if (found) {
         logger.info(`✓ Processed ${candidate.candidateName} in ${advertLabel}.`);
         await markRowAsProcessed(candidate.rowIndex, processedValue);
+        if (advertId) await writeAdvertIdToRow(candidate.rowIndex, advertId);
         logger.info(`Marked row ${candidate.rowIndex} as processed (${processedValue}).`);
         processedCount++;
       } else {
@@ -170,6 +173,7 @@ export async function processAllCandidatesByAdvert(
           `advert "${advert.jobTitle}"`,
           shouldStop,
           processedValue,
+          advert.advertId,
         );
 
         if (processedCount > 0) {
@@ -240,6 +244,8 @@ export async function processAllCandidatesByAdvert(
           candidatesForThisAdvert,
           `advert "${advert.jobTitle}"`,
           shouldStop,
+          "TRUE",
+          advert.advertId,
         );
 
         if (processedCount > 0) {
@@ -326,6 +332,8 @@ export async function processAllCandidatesByAdvert(
       group,
       `adref_no "${adrefNo}"`,
       shouldStop,
+      "TRUE",
+      chosenAdvert.advertId,
     );
 
     if (processedCount > 0) {
@@ -389,6 +397,8 @@ export async function processAllCandidatesByAdvert(
         candidatesForThisAdvert,
         `advert "${advert.jobTitle}"`,
         shouldStop,
+        "TRUE",
+        advert.advertId,
       );
 
       if (processedCount > 0) {
