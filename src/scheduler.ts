@@ -8,7 +8,6 @@ import { launchAndLogin, runBatch, logoutAndClose, aestTimestamp } from "./main"
 import { sendErrorEmail, sendSuccessReportEmail } from "./services/email";
 import { AdvertRunResult } from "./main";
 import { mergeAnsweredSummary } from "./services/sheets";
-import { navigateToManageAdverts, readRecentAdverts, AdvertSummary } from "./automation/adverts";
 
 dotenv.config();
 
@@ -235,23 +234,11 @@ async function runDay(): Promise<void> {
   logger.info(`[Scheduler] Day session ended at ${aestTimestamp()} AEST`);
   await sendSuccessReportEmail(allAdvertResults);
 
-  // Re-open a temporary session just to read the advert list for the summary
-  const summarySession = await launchAndLogin();
-  let advertList: AdvertSummary[] = [];
   try {
-    await navigateToManageAdverts(summarySession.page);
-    advertList = await readRecentAdverts(summarySession.page);
-  } catch (err) {
-    logger.warn(`[Scheduler] WARNING: Failed to read advert list for summary: ${err}`);
-  }
-
-  try {
-    await mergeAnsweredSummary(advertList);
+    await mergeAnsweredSummary();
   } catch (err) {
     logger.warn(`[Scheduler] WARNING: Failed to write answered summary: ${err}`);
   }
-
-  await logoutAndClose(summarySession);
 
   scheduleNextDay();
 }

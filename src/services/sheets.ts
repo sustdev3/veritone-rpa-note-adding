@@ -200,86 +200,26 @@ export async function markRowAsError(rowIndex: number): Promise<void> {
   logger.info(`Row ${rowIndex} marked as error`);
 }
 
-export async function mergeAnsweredSummary(
-  advertList: Array<{ advertId: string; refNumber: string; jobTitle: string; datePosted: Date }>,
-): Promise<void> {
-  if (advertList.length === 0) {
-    logger.info("No adverts in advert list — skipping summary write");
-    return;
-  }
-
-  logger.info(`Writing answered summary from ${advertList.length} advert(s) in lookback window...`);
+export async function mergeAnsweredSummary(): Promise<void> {
+  logger.info("Writing answered summary from Sheet1 col N...");
   const { sheets, sheetId } = await getAuthenticatedSheets();
 
-  // Build adrefNo → Set<jobTitle> from the advert list (authoritative source from Veritone).
-  // Adverts without a refNumber are included in the Summary but can't be matched to Sheet1 respondents.
-  const adrefToTitles = new Map<string, Set<string>>();
-  for (const advert of advertList) {
-    if (!advert.refNumber) continue;
-    const titles = adrefToTitles.get(advert.refNumber) ?? new Set();
-    titles.add(advert.jobTitle);
-    adrefToTitles.set(advert.refNumber, titles);
-  }
-
-  // Count ALL form respondents from Sheet1.
-  // Primary: rows with advertId in col N (exact match — written at note-add time).
-  // Fallback: rows without col N use adrefNo + hint disambiguation (historical rows).
   const sheet1Response = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
     range: "Sheet1!A:N",
   });
 
-  const advertIdCounts = new Map<string, number>();
-  const adrefNoCounts = new Map<string, number>();
-
+  // Count respondents per unique advertId (col N only — rows without col N are skipped)
+  const counts = new Map<string, number>();
   for (const row of (sheet1Response.data.values || []).slice(1)) {
     const advertId = (row[13] || "").trim();
-
-    if (advertId) {
-      advertIdCounts.set(advertId, (advertIdCounts.get(advertId) ?? 0) + 1);
-      continue;
-    }
-
-    const adrefNo = (row[3] || "").trim();
-    const advertHint = (row[4] || "").trim().toLowerCase();
-    if (!adrefNo) continue;
-
-    const titles = adrefToTitles.get(adrefNo);
-    if (!titles || titles.size <= 1) {
-      adrefNoCounts.set(adrefNo, (adrefNoCounts.get(adrefNo) ?? 0) + 1);
-    } else {
-      const titlesArr = Array.from(titles);
-      const matched = (() => {
-        if (advertHint.length === 0) return titlesArr[0];
-        const hintMatches = titlesArr.filter((t) => t.toLowerCase().includes(advertHint));
-        if (hintMatches.length === 0) return titlesArr[0];
-        if (hintMatches.length === 1) return hintMatches[0];
-        return hintMatches.find((t) => t.toLowerCase().startsWith(advertHint)) ?? hintMatches[0];
-      })();
-      const key = `${adrefNo}|${matched}`;
-      adrefNoCounts.set(key, (adrefNoCounts.get(key) ?? 0) + 1);
-    }
+    if (!advertId) continue;
+    counts.set(advertId, (counts.get(advertId) ?? 0) + 1);
   }
 
-  const getCount = (advertId: string, adrefNo: string, jobTitle: string): number => {
-    if (advertId && advertIdCounts.has(advertId)) return advertIdCounts.get(advertId)!;
-    if (!adrefNo) return 0;
-    const titles = adrefToTitles.get(adrefNo);
-    if (!titles || titles.size <= 1) return adrefNoCounts.get(adrefNo) ?? 0;
-    return adrefNoCounts.get(`${adrefNo}|${jobTitle}`) ?? 0;
-  };
-
-  // Deduplicate advert list by refNumber|jobTitle (same job may appear as multiple advertIds).
-  // For duplicates keep the most recent datePosted.
-  const summaryMap = new Map<string, { advertId: string; adrefNo: string; jobTitle: string; datePosted: string }>();
-  for (const advert of advertList) {
-    const adrefNo = advert.refNumber || advert.advertId;
-    const key = `${adrefNo}|${advert.jobTitle}`;
-    const dateStr = advert.datePosted.toISOString().substring(0, 10);
-    const existing = summaryMap.get(key);
-    if (!existing || dateStr > existing.datePosted) {
-      summaryMap.set(key, { advertId: advert.advertId, adrefNo, jobTitle: advert.jobTitle, datePosted: dateStr });
-    }
+  if (counts.size === 0) {
+    logger.info("No advertIds recorded in Sheet1 — skipping summary write");
+    return;
   }
 
   const updatedAt = new Date().toLocaleString("en-AU", {
@@ -288,13 +228,15 @@ export async function mergeAnsweredSummary(
     timeStyle: "short",
   });
 
-  const rows = Array.from(summaryMap.values()).map((e) => [
-    e.adrefNo,
-    e.jobTitle,
-    e.datePosted,
-    getCount(e.advertId, e.adrefNo, e.jobTitle),
-    updatedAt,
-    e.advertId,
+  // Col positions kept intact so pre-screening RPA reads col D (count) and col F (advertId) correctly.
+  // Cols A-C are empty — note-adding RPA does not have advert metadata.
+  const rows = Array.from(counts.entries()).map(([advertId, count]) => [
+    "",        // A: adrefNo
+    "",        // B: jobTitle
+    "",        // C: datePosted
+    count,     // D: answeredCount
+    updatedAt, // E: updatedAt
+    advertId,  // F: advertId
   ]);
 
   await sheets.spreadsheets.values.clear({
@@ -302,14 +244,12 @@ export async function mergeAnsweredSummary(
     range: "Summary!A2:F",
   });
 
-  if (rows.length > 0) {
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: sheetId,
-      range: "Summary!A2",
-      valueInputOption: "RAW",
-      requestBody: { values: rows },
-    });
-  }
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: sheetId,
+    range: "Summary!A2",
+    valueInputOption: "RAW",
+    requestBody: { values: rows },
+  });
 
-  logger.info(`Answered summary written — ${summaryMap.size} advert(s) tracked`);
+  logger.info(`Answered summary written — ${counts.size} unique advertId(s)`);
 }
