@@ -110,13 +110,18 @@ async function enterNotes(page: Page, row: CandidateRow): Promise<void> {
     hour: '2-digit', minute: '2-digit', hour12: false
   });
 
+  const eligibilityLine = (row.livingInAus || row.hasVisa)
+    ? `Living in AUS: ${row.livingInAus} --- Has Visa: ${row.hasVisa} ---`
+    : null;
+
   const noteContent = [
     `Screening Form Response (${timestamp}) ---`,
+    eligibilityLine,
     `Suburb: ${row.suburb} --- Licence: ${row.carLicence} --- Transport: ${row.transport} ---`,
     `Fulltime Hours: ${row.fulltimeHours} --- Immediate Start: ${row.immediateStart} --- Preferred Shift: ${row.preferredShift} ---`,
     `Last Job End: ${row.lastJobEnd}`,
     `---`,
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 
   logger.info("Counting existing notes before submission...");
   const notesBeforeCount = await page.locator('ul.notes-list li.note').count();

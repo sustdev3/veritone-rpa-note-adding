@@ -8,14 +8,16 @@ export interface CandidateRow {
   candidateName: string;
   adrefNo: string;          // col D (index 3) — used to search for the advert
   advertHint: string;       // col E (index 4) — used to disambiguate adref_no results
-  suburb: string;
-  carLicence: string;
-  transport: string;
-  fulltimeHours: string;
-  immediateStart: string;
-  preferredShift: string;
-  lastJobEnd: string;
-  processed: string;        // col M (index 12)
+  livingInAus: string;      // col F (index 5)
+  hasVisa: string;          // col G (index 6)
+  suburb: string;           // col H (index 7)
+  carLicence: string;       // col I (index 8)
+  transport: string;        // col J (index 9)
+  fulltimeHours: string;    // col K (index 10)
+  immediateStart: string;   // col L (index 11)
+  preferredShift: string;   // col M (index 12)
+  lastJobEnd: string;       // col N (index 13)
+  processed: string;        // col O (index 14)
 }
 
 async function getAuthenticatedSheets() {
@@ -69,7 +71,7 @@ export async function getUnprocessedRows(since?: Date, before?: Date): Promise<C
 
   const response = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: "Sheet1!A:M",
+    range: "Sheet1!A:O",
   });
 
   const rows = response.data.values || [];
@@ -84,7 +86,7 @@ export async function getUnprocessedRows(since?: Date, before?: Date): Promise<C
       continue;
     }
 
-    const processedStatus = (row[12] || "").toUpperCase();
+    const processedStatus = (row[14] || "").toUpperCase();
     if (processedStatus === "TRUE" || processedStatus === "ERROR" || processedStatus === "SKIPPED" || processedStatus === "OUTSIDE WINDOW") {
       continue;
     }
@@ -102,14 +104,16 @@ export async function getUnprocessedRows(since?: Date, before?: Date): Promise<C
       candidateName: row[2] || "",
       adrefNo: row[3] || "",
       advertHint: row[4] || "",
-      suburb: row[5] || "",
-      carLicence: row[6] || "",
-      transport: row[7] || "",
-      fulltimeHours: row[8] || "",
-      immediateStart: row[9] || "",
-      preferredShift: row[10] || "",
-      lastJobEnd: row[11] || "",
-      processed: row[12] || "",
+      livingInAus: row[5] || "",
+      hasVisa: row[6] || "",
+      suburb: row[7] || "",
+      carLicence: row[8] || "",
+      transport: row[9] || "",
+      fulltimeHours: row[10] || "",
+      immediateStart: row[11] || "",
+      preferredShift: row[12] || "",
+      lastJobEnd: row[13] || "",
+      processed: row[14] || "",
     });
   }
 
@@ -124,7 +128,7 @@ export async function markRowAsProcessed(rowIndex: number, value = "TRUE"): Prom
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `Sheet1!M${rowIndex}`,
+    range: `Sheet1!O${rowIndex}`,
     valueInputOption: "RAW",
     requestBody: {
       values: [[value]],
@@ -145,7 +149,7 @@ export async function markRowsAsSkipped(rowIndexes: number[]): Promise<void> {
     requestBody: {
       valueInputOption: "RAW",
       data: rowIndexes.map(rowIndex => ({
-        range: `Sheet1!M${rowIndex}`,
+        range: `Sheet1!O${rowIndex}`,
         values: [["SKIPPED"]],
       })),
     },
@@ -163,7 +167,7 @@ export async function incrementRowAttempt(rowIndex: number, currentAttempts: str
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `Sheet1!M${rowIndex}`,
+    range: `Sheet1!O${rowIndex}`,
     valueInputOption: "RAW",
     requestBody: {
       values: [[newValue]],
@@ -177,7 +181,7 @@ export async function writeAdvertIdToRow(rowIndex: number, advertId: string): Pr
   const { sheets, sheetId } = await getAuthenticatedSheets();
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `Sheet1!N${rowIndex}`,
+    range: `Sheet1!P${rowIndex}`,
     valueInputOption: "RAW",
     requestBody: { values: [[advertId]] },
   });
@@ -190,7 +194,7 @@ export async function markRowAsError(rowIndex: number): Promise<void> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `Sheet1!M${rowIndex}`,
+    range: `Sheet1!O${rowIndex}`,
     valueInputOption: "RAW",
     requestBody: {
       values: [["error"]],
@@ -206,13 +210,13 @@ export async function mergeAnsweredSummary(): Promise<void> {
 
   const sheet1Response = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: "Sheet1!A:N",
+    range: "Sheet1!A:P",
   });
 
   // Count respondents per unique advertId (col N only — rows without col N are skipped)
   const counts = new Map<string, number>();
   for (const row of (sheet1Response.data.values || []).slice(1)) {
-    const advertId = (row[13] || "").trim();
+    const advertId = (row[15] || "").trim();
     if (!advertId) continue;
     counts.set(advertId, (counts.get(advertId) ?? 0) + 1);
   }
