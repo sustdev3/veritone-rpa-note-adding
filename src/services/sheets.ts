@@ -221,6 +221,20 @@ export async function mergeAnsweredSummary(): Promise<void> {
     counts.set(advertId, (counts.get(advertId) ?? 0) + 1);
   }
 
+  // Add baseline counts from rows previously deleted by cleanup.
+  // CountsBaseline tab: col A = advertId, col B = cumulative deleted-row count.
+  const baselineRes = await sheets.spreadsheets.values.get({
+    spreadsheetId: sheetId,
+    range: "CountsBaseline!A2:B",
+  });
+  for (const row of baselineRes.data.values || []) {
+    const advertId = (row[0] || "").trim();
+    const base = parseInt(row[1], 10) || 0;
+    if (advertId && base > 0) {
+      counts.set(advertId, (counts.get(advertId) ?? 0) + base);
+    }
+  }
+
   if (counts.size === 0) {
     logger.info("No advertIds recorded in Sheet1 — skipping summary write");
     return;
