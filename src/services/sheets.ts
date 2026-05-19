@@ -246,20 +246,15 @@ export async function mergeAnsweredSummary(): Promise<void> {
     timeStyle: "short",
   });
 
-  // Col positions kept intact so pre-screening RPA reads col D (count) and col F (advertId) correctly.
-  // Cols A-C are empty — note-adding RPA does not have advert metadata.
   const rows = Array.from(counts.entries()).map(([advertId, count]) => [
-    "",        // A: adrefNo
-    "",        // B: jobTitle
-    "",        // C: datePosted
-    count,     // D: answeredCount
-    updatedAt, // E: updatedAt
-    advertId,  // F: advertId
+    count,     // A: answeredCount
+    updatedAt, // B: updatedAt
+    advertId,  // C: advertId
   ]);
 
   await sheets.spreadsheets.values.clear({
     spreadsheetId: sheetId,
-    range: "Summary!A2:F",
+    range: "Summary!A2:C",
   });
 
   await sheets.spreadsheets.values.update({
